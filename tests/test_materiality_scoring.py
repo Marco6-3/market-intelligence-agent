@@ -6,7 +6,7 @@ from market_agent.models import FilingItem, NewsItem, StockItem
 from market_agent.scoring import score_item
 
 
-def test_official_8k_scores_high() -> None:
+def test_earnings_8k_can_score_high_when_content_signals() -> None:
     filing = FilingItem(
         ticker="MU",
         company_name="Micron",
@@ -28,16 +28,28 @@ def test_official_8k_scores_high() -> None:
 
     assert materiality == "high"
     assert score >= 80
-    assert breakdown["filing_score"] == 25
+    assert breakdown["filing_score"] == 10
 
 
 def test_critical_sec_forms_default_high() -> None:
     materiality, why, thesis_effect, confidence = classify_filing_materiality("10-Q", "Quarterly report")
 
     assert materiality == "high"
-    assert "core periodic/current report" in why
+    assert "core periodic report" in why
     assert thesis_effect == "needs_review"
     assert confidence == "high"
+
+
+def test_generic_8k_is_not_automatically_high() -> None:
+    materiality, why, thesis_effect, confidence = classify_filing_materiality(
+        "8-K",
+        "Current report",
+    )
+
+    assert materiality == "medium"
+    assert "not automatically high" in why
+    assert thesis_effect == "needs_review"
+    assert confidence == "medium"
 
 
 def test_old_public_news_does_not_become_high() -> None:

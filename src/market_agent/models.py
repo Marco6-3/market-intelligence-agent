@@ -36,13 +36,13 @@ class ReportPolicy(StrictModel):
 
 
 class GlobalSettings(StrictModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     enable_public_news_fallback: bool = True
     enable_google_news_rss: bool = True
     enable_investor_relations_rss: bool = True
     enable_sec_edgar: bool = True
     enable_yfinance: bool = True
-    enable_akshare: bool = False
-    enable_tushare_if_token_available: bool = False
     no_buy_sell_recommendations: bool = True
 
 
@@ -77,18 +77,19 @@ class Watchlist(StrictModel):
     stocks: list[StockItem] = Field(default_factory=list)
     daily_core_stocks: list[StockItem] = Field(default_factory=list)
     weekly_extended_stocks: list[StockItem] = Field(default_factory=list)
-    china_weekly_stocks: list[StockItem] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_out_of_scope_lists(cls, data: object) -> object:
+        if isinstance(data, dict):
+            cleaned = dict(data)
+            cleaned.pop("china_weekly_stocks", None)
+            return cleaned
+        return data
 
     @model_validator(mode="after")
     def require_some_stocks(self) -> "Watchlist":
-        if not any(
-            [
-                self.stocks,
-                self.daily_core_stocks,
-                self.weekly_extended_stocks,
-                self.china_weekly_stocks,
-            ]
-        ):
+        if not any([self.stocks, self.daily_core_stocks, self.weekly_extended_stocks]):
             raise ValueError("watchlist must define stocks or scoped stock lists")
         return self
 

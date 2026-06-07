@@ -22,6 +22,7 @@ def render_markdown(report: ReportData) -> str:
     _render_critical_alerts(lines, report, items)
     _render_analyst_triage(lines, report)
     _render_changes(lines, report)
+    _render_price_action_review(lines, report)
     _render_category_summary(lines, report)
     _render_snapshot_table(lines, report)
     _render_high_materiality(lines, items)
@@ -76,7 +77,7 @@ def _render_critical_alerts(
         for item in items
         if item.materiality == "high"
         and high_allowed_in_critical(item)
-        and (freshness_label(item.freshness) in {"fresh", "recent", "unknown"} or item.item_type in {"sec_filing", "earnings"})
+        and freshness_label(item.freshness) in {"fresh", "recent"}
     ][:10]
     if critical:
         for item in critical:
@@ -144,6 +145,38 @@ def _render_changes(lines: list[str], report: ReportData) -> None:
     lines.append("")
 
 
+def _render_price_action_review(lines: list[str], report: ReportData) -> None:
+    lines.append("## Price Action Review")
+    snapshots = list(_latest_snapshot_by_ticker(report.market_snapshot).values())
+    movers = [
+        item
+        for item in snapshots
+        if item.change_percent is not None and abs(item.change_percent) >= 2.5
+    ]
+    focus_tickers = {"WDC", "LRCX", "KLAC", "STX"}
+    focus = [
+        item
+        for item in snapshots
+        if item.ticker.upper() in focus_tickers
+        and item.change_percent is not None
+        and abs(item.change_percent) >= 1.5
+        and item not in movers
+    ]
+    review_items = sorted([*movers, *focus], key=lambda item: abs(item.change_percent or 0), reverse=True)
+    if not review_items:
+        lines.append("not available")
+        lines.append("")
+        return
+    for item in review_items[:12]:
+        volume_note = _volume_note(item)
+        direction = "up" if (item.change_percent or 0) > 0 else "down"
+        lines.append(
+            f"- {item.ticker}: {direction} {_signed_number(item.change_percent)}% to {_number(item.price)} "
+            f"({volume_note}). Follow-up: connect the move to filings, earnings, news clusters, or sector read-throughs before treating it as thesis signal."
+        )
+    lines.append("")
+
+
 def _render_category_summary(lines: list[str], report: ReportData) -> None:
     lines.append("## Category Summary")
     desired = [
@@ -159,35 +192,14 @@ def _render_category_summary(lines: list[str], report: ReportData) -> None:
         matched = _category_lookup(summaries, category)
         lines.append(f"### {category}")
         if matched:
-            lines.append(f"- Key movers: {_list_value(matched.key_movers)}")
-            lines.append(f"- Important news: {_list_value(matched.important_news)}")
-            if category == "AI Compute":
-                lines.append(f"- Demand signal: {matched.demand_signal}")
-                lines.append(f"- Risk signal: {matched.risk_signal}")
-            elif category == "AI ASIC and Networking":
-                lines.append(f"- Hyperscaler custom silicon signal: {matched.demand_signal}")
-                lines.append(f"- Networking / optical signal: {matched.risk_signal}")
-            elif category == "Semiconductor Equipment":
-                lines.append(f"- Capex signal: {matched.demand_signal}")
-                lines.append(f"- Advanced node / EUV signal: {matched.demand_signal}")
-                lines.append(f"- Export control / geopolitical risk: {matched.risk_signal}")
-            elif category == "Memory and Storage":
-                lines.append(f"- HBM signal: {matched.demand_signal}")
-                lines.append("- DRAM / NAND pricing signal: not available")
-                lines.append("- HDD / SSD data center demand signal: not available")
-                lines.append(f"- Shortage / oversupply signal: {matched.risk_signal}")
-            elif category == "AI Cloud Demand":
-                lines.append(f"- Capex changes: {matched.demand_signal}")
-                lines.append("- Data center buildout: not available")
-                lines.append("- AI chip order / delay signal: not available")
-            else:
-                lines.append(f"- Physical AI signal: {matched.demand_signal}")
-                lines.append("- Factory automation signal: not available")
-                lines.append("- Medical robotics signal: not available")
-                lines.append("- Warehouse robotics signal: not available")
+            lines.append(f"- Current read: {_category_current_read(category, matched)}")
+            lines.append(f"- Evidence to verify: {_category_evidence_line(matched)}")
+            lines.append(f"- Risk / contradiction: {_value(matched.risk_signal)}")
+            lines.append(f"- Evidence strength: {matched.evidence_strength}")
         else:
-            lines.append("- Key movers: not available")
-            lines.append("- Important news: not available")
+            lines.append("- Current read: not available")
+            lines.append("- Evidence to verify: not available")
+            lines.append("- Risk / contradiction: not available")
     lines.append("")
 
 
@@ -253,7 +265,7 @@ def _render_per_ticker_detail(
         lines.append("#### Filings Summary")
         _render_item_titles(lines, [item for item in ticker_items if item.item_type == "sec_filing"][:5])
         lines.append("#### News Summary")
-        _render_item_titles(lines, [item for item in ticker_items if item.item_type in {"public_news", "ir_news", "cn_announcement"}][:5])
+        _render_item_titles(lines, [item for item in ticker_items if item.item_type in {"public_news", "ir_news"}][:5])
         lines.append("#### Theme Mentions")
         themes = sorted({theme for item in ticker_items for theme in item.related_themes})
         lines.append(", ".join(themes) if themes else "not available")
@@ -414,6 +426,41 @@ def _category_lookup(summaries: dict[str, object], category: str) -> object | No
     return None
 
 
+def _category_current_read(category: str, summary: object) -> str:
+    movers = getattr(summary, "key_movers", [])
+    news = getattr(summary, "important_news", [])
+    demand = _value(getattr(summary, "demand_signal", None))
+    if movers and news:
+        return (
+            f"{category} has both price action and information-flow signals. "
+            f"Price action: {_list_value(movers[:3])}. News/filing signal: {_list_value(news[:3])}. "
+            f"Tracked demand/theme read: {demand}."
+        )
+    if movers:
+        return (
+            f"{category} is being driven mainly by price action today. "
+            f"Key moves: {_list_value(movers[:3])}. Treat as triage until matched with filings or high-quality news."
+        )
+    if news:
+        return (
+            f"{category} has information-flow signal without a strong captured price move. "
+            f"Top items: {_list_value(news[:3])}. Tracked demand/theme read: {demand}."
+        )
+    if demand != "not available":
+        return f"{category} has theme mentions but no decisive high-quality catalyst yet. Tracked demand/theme read: {demand}."
+    return "No decisive fresh category signal captured; keep this bucket in background monitoring."
+
+
+def _category_evidence_line(summary: object) -> str:
+    news = getattr(summary, "important_news", [])
+    movers = getattr(summary, "key_movers", [])
+    if news:
+        return _list_value(news[:4])
+    if movers:
+        return _list_value(movers[:4])
+    return "not available"
+
+
 def _theme_signal(items: list[IntelligenceItem]) -> str:
     effects = {item.thesis_effect for item in items}
     if "supports_thesis" in effects and "weakens_thesis" in effects:
@@ -476,6 +523,15 @@ def _signed_number(value: float | None) -> str:
 
 def _integer(value: int | None) -> str:
     return "not available" if value is None else f"{value:,}"
+
+
+def _volume_note(item: MarketSnapshot) -> str:
+    if item.volume is None:
+        return "volume not available"
+    if item.avg_volume in (None, 0):
+        return f"volume {_integer(item.volume)}"
+    ratio = item.volume / item.avg_volume
+    return f"volume {_integer(item.volume)}, {ratio:.1f}x average"
 
 
 def _escape(value: object) -> str:

@@ -4,6 +4,13 @@
 
 它不是交易机器人，不输出买入/卖出建议，不给目标价，也不编造缺失数据。数据缺失会写 `not available`，标题级新闻和 Google News RSS 聚合链接会降低 confidence。
 
+当前项目范围：
+
+- This project focuses on US-listed and globally important AI hard-tech equities.
+- A-share / CN market support is currently out of scope.
+- No AKShare or Tushare setup is required.
+- Supported markets include US tickers and selected global tickers available through yfinance / public sources, such as Korean tickers and ADRs.
+
 ## 覆盖方向
 
 - AI 算力芯片、AI ASIC、AI 网络芯片
@@ -11,8 +18,7 @@
 - 存储、HBM、DRAM、NAND、HDD、SSD
 - AI 云基础设施、云厂商 capex、数据中心需求
 - 机器人、Physical AI、工业自动化、医疗机器人、仓储机器人
-
-当前示例 watchlist 暂不包含 A 股。
+- 少量非美股但全球重要的半导体和 HBM 产业链标的，例如 `000660.KS`、`005930.KS`、`ASML`、`TSM`
 
 ## 安装
 
@@ -74,6 +80,7 @@ python -m market_agent run --watchlist watchlist.example.yaml --scope daily --ma
 - Google News RSS：公开 fallback 聚合源；系统会尽量解析 `canonical_url`，解析失败时保留 `aggregator_url` 并降低 confidence。
 - FMP / Alpha Vantage / Finnhub：配置 API key 后用于增强新闻和财报日历。
 - 公司 IR RSS：可在 watchlist 的 `ir_news_urls` 中配置。
+- A-share / CN market support is currently out of scope；默认路线不安装、不调用 AKShare 或 Tushare，也不采集 CN announcements。
 
 所有请求都带 timeout；单个数据源失败会记录 warning，不应导致整个 pipeline 崩溃。
 
@@ -91,6 +98,7 @@ Markdown 报告包含：
 - Critical Alerts
 - Analyst Triage
 - What Changed Since Last Report
+- Price Action Review
 - Category Summary
 - Watchlist Snapshot Table
 - High Materiality Items

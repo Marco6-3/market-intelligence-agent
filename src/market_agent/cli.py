@@ -7,6 +7,7 @@ import typer
 
 from .config import AppConfig
 from .pipeline import load_watchlist, run_daily_brief, select_watchlist_stocks
+from .scope import out_of_scope_warnings
 
 app = typer.Typer(
     help=(
@@ -32,10 +33,13 @@ def validate_watchlist_command(
     daily_count = len(select_watchlist_stocks(parsed, "daily"))
     weekly_count = len(select_watchlist_stocks(parsed, "weekly"))
     all_count = len(select_watchlist_stocks(parsed, "all"))
+    warnings = out_of_scope_warnings(select_watchlist_stocks(parsed, "all"))
     typer.echo(
         f"Watchlist valid: daily={daily_count}, weekly={weekly_count}, all={all_count}, "
         f"keywords={len(parsed.keywords)}, timezone={parsed.timezone}"
     )
+    for warning in warnings:
+        typer.echo(f"Warning: {warning}")
 
 
 @app.command("run")

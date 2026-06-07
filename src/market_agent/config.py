@@ -19,7 +19,6 @@ class AppConfig:
     fmp_api_key: str | None
     alpha_vantage_api_key: str | None
     finnhub_api_key: str | None
-    tushare_token: str | None
     yfinance_enabled: bool
     llm_provider: str
     llm_base_url: str | None
@@ -45,7 +44,6 @@ class AppConfig:
             fmp_api_key=_clean_env(os.getenv("FMP_API_KEY")),
             alpha_vantage_api_key=_clean_env(os.getenv("ALPHA_VANTAGE_API_KEY")),
             finnhub_api_key=_clean_env(os.getenv("FINNHUB_API_KEY")),
-            tushare_token=_clean_env(os.getenv("TUSHARE_TOKEN")),
             yfinance_enabled=_parse_bool(os.getenv("YFINANCE_ENABLED"), default=True),
             llm_provider=_clean_env(os.getenv("LLM_PROVIDER")) or "moonshot",
             llm_base_url=(

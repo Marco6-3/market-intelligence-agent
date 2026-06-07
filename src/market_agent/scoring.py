@@ -78,7 +78,9 @@ MAJOR_THEMES = {
     "EUV",
 }
 
-HIGH_FILING_FORMS = {"10-K", "10-Q", "8-K", "S-1", "S-3", "10-K/A", "10-Q/A", "8-K/A"}
+CORE_FILING_FORMS = {"10-K", "10-Q", "20-F", "10-K/A", "10-Q/A", "20-F/A"}
+REGISTRATION_FILING_FORMS = {"S-1", "S-3", "S-1/A", "S-3/A"}
+CURRENT_REPORT_FORMS = {"8-K", "8-K/A", "6-K", "6-K/A"}
 
 
 def score_item(
@@ -127,16 +129,13 @@ def materiality_from_score(score: int) -> Materiality:
 
 
 def high_allowed_in_critical(item: ScorableItem) -> bool:
-    if freshness_label(item.freshness) != "stale_context":
-        return True
-    return getattr(item, "item_type", "") in {
-        "official_filing",
-        "sec_filing",
-        "earnings",
-        "company_guidance",
-        "exchange_announcement",
-        "manual_override",
-    }
+    if getattr(item, "materiality_score", 0) <= 0:
+        return False
+    if freshness_label(item.freshness) == "stale_context":
+        return False
+    if _is_google_rss_headline_only(item):
+        return False
+    return True
 
 
 def _source_score(item: ScorableItem) -> int:
@@ -148,8 +147,6 @@ def _source_score(item: ScorableItem) -> int:
     if item_type in {"ir_news", "company_guidance"} or "investor relations" in source:
         return 25
     if item_type in {"sec_filing", "official_filing"} or "sec edgar" in source:
-        return 25
-    if item_type in {"cn_announcement", "exchange_announcement"} or "announcement" in source:
         return 25
     if any(name in source for name in MAJOR_REPUTABLE_NEWS):
         return 20
@@ -207,8 +204,12 @@ def _theme_score(themes: list[str]) -> int:
 def _filing_score(item: ScorableItem) -> int:
     form = clean_text(getattr(item, "form", "")) or ""
     form_upper = form.upper()
-    if form_upper in HIGH_FILING_FORMS:
+    if form_upper in CORE_FILING_FORMS:
         return 25
+    if form_upper in REGISTRATION_FILING_FORMS:
+        return 20
+    if form_upper in CURRENT_REPORT_FORMS:
+        return 10
     if form_upper in {"4", "FORM 4"}:
         return 5
     if form_upper in {"144", "FORM 144"}:
@@ -229,7 +230,6 @@ def _stale_penalty(item: ScorableItem) -> int:
         "sec_filing",
         "earnings",
         "company_guidance",
-        "exchange_announcement",
     }:
         return 0
     return -30
@@ -247,6 +247,17 @@ def _low_quality_source_penalty(item: ScorableItem) -> int:
     if "google news" in source and not canonical_url:
         penalty -= 5
     return penalty
+
+
+def _is_google_rss_headline_only(item: ScorableItem) -> bool:
+    if getattr(item, "content_depth", "") != "headline_only":
+        return False
+    source = (clean_text(getattr(item, "source_name", "")) or "").casefold()
+    aggregator_source = (clean_text(getattr(item, "aggregator_source", None)) or "").casefold()
+    canonical_url = clean_text(getattr(item, "canonical_url", None))
+    return not canonical_url and (
+        "google news" in source or aggregator_source == "google news rss"
+    )
 
 
 def _item_text(item: ScorableItem) -> str:

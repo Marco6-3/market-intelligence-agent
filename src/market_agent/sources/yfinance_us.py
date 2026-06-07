@@ -69,7 +69,7 @@ def snapshot_from_history(
         MarketSnapshot(
             ticker=stock.ticker,
             name=stock.name,
-            market="US",
+            market=stock.market,
             price=price,
             currency=_string_or_none(fast_info.get("currency")),
             change_percent=change_percent,

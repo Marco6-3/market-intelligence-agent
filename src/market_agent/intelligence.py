@@ -42,18 +42,16 @@ DEFAULT_THEME_KEYWORDS = [
     "memory oversupply",
 ]
 
-HIGH_FILING_FORMS = {
+CORE_FILING_FORMS = {
     "10-K",
     "10-K/A",
     "10-Q",
     "10-Q/A",
-    "8-K",
-    "8-K/A",
     "20-F",
     "20-F/A",
-    "6-K",
-    "6-K/A",
 }
+CURRENT_REPORT_FORMS = {"8-K", "8-K/A", "6-K", "6-K/A"}
+REGISTRATION_FILING_FORMS = {"S-1", "S-1/A", "S-3", "S-3/A"}
 
 SUPPLY_CHAIN_RISK_TERMS = [
     "material supply chain risk",
@@ -72,9 +70,7 @@ HIGH_SOURCE_NAMES = {
     "company_ir",
     "company investor relations rss",
     "sec edgar",
-    "exchange_filings",
     "earnings_call",
-    "akshare cn announcements",
 }
 
 HIGH_PUBLISHERS = {
@@ -274,17 +270,17 @@ def classify_filing_materiality(
     description_text = clean_text(description) or ""
     haystack = f"{form_upper} {description_text} {truncate(document_text, 3000) or ''}".casefold()
 
-    if form_upper in HIGH_FILING_FORMS:
+    if form_upper in CORE_FILING_FORMS:
         return (
             "high",
-            f"{form_upper} is a core periodic/current report and can contain material operating, risk, or guidance updates.",
+            f"{form_upper} is a core periodic report and can contain material operating, risk, or guidance updates.",
             "needs_review",
             "high",
         )
-    if form_upper.startswith("S-3"):
+    if form_upper in REGISTRATION_FILING_FORMS:
         return (
             "high",
-            "S-3 registration can affect financing capacity, dilution risk, or capital markets optionality.",
+            f"{form_upper} registration can affect financing capacity, dilution risk, or capital markets optionality.",
             "needs_review",
             "high",
         )
@@ -294,6 +290,33 @@ def classify_filing_materiality(
             "Filing appears tied to earnings/results disclosure, which is directly relevant to estimates and thesis updates.",
             "needs_review",
             "high",
+        )
+    if form_upper in CURRENT_REPORT_FORMS:
+        if any(
+            term in haystack
+            for term in [
+                "guidance",
+                "material definitive agreement",
+                "acquisition",
+                "merger",
+                "restructuring",
+                "bankruptcy",
+                "impairment",
+                "departure of directors",
+                "appointment of",
+            ]
+        ):
+            return (
+                "medium",
+                f"{form_upper} includes potentially material current-report language; review the filing text before upgrading it to high.",
+                "needs_review",
+                "medium",
+            )
+        return (
+            "medium",
+            f"{form_upper} current report is not automatically high without parsed material content such as earnings, guidance, M&A, or other primary-document evidence.",
+            "needs_review",
+            "medium",
         )
     if form_upper == "SD":
         if any(term in haystack for term in SUPPLY_CHAIN_RISK_TERMS):
@@ -357,7 +380,7 @@ def enrich_filing_item(
         company_name=stock.name,
         aliases=stock.aliases,
     )
-    materiality = max_materiality(filing.materiality, materiality)
+    materiality = _combine_filing_materiality(filing.materiality, materiality, score)
     summary = filing.summary.model_copy(
         update={
             "affected_company": stock.name,
@@ -476,7 +499,7 @@ def filing_to_item(filing: FilingItem) -> IntelligenceItem:
         item_type="sec_filing",
         title=filing.title or f"{filing.form} filing",
         summary=filing.summary,
-        summary_confidence="high" if filing.form.upper() in HIGH_FILING_FORMS else "medium",
+        summary_confidence="high" if filing.form.upper() in CORE_FILING_FORMS else "medium",
         why_it_matters=filing.why_it_matters or "not available",
         related_themes=filing.related_themes,
         matched_terms=filing.matched_terms,
@@ -557,7 +580,7 @@ def classify_source_quality(item: NewsItem) -> SourceQuality:
     publisher = (item.publisher or "").casefold()
     aggregator_source = (item.aggregator_source or "").casefold()
 
-    if item.item_type in {"ir_news", "cn_announcement"}:
+    if item.item_type == "ir_news":
         return "high"
     if any(name in source_name for name in HIGH_SOURCE_NAMES):
         return "high"
@@ -622,7 +645,7 @@ def build_analyst_triage(items: Iterable[IntelligenceItem]) -> AnalystTriage:
         for item in material
         if item.materiality == "high"
         and high_allowed_in_critical(item)
-        and (freshness_label(item.freshness) in {"fresh", "recent"} or item.item_type in {"sec_filing", "earnings"})
+        and freshness_label(item.freshness) in {"fresh", "recent"}
     ]
     watch = [
         item
@@ -813,7 +836,7 @@ def _review_queue_score(item: IntelligenceItem) -> int:
         score += 40
     elif item.materiality == "medium":
         score += 20
-    if item.item_type in {"public_news", "ir_news", "cn_announcement"} and item.cluster_size > 1:
+    if item.item_type in {"public_news", "ir_news"} and item.cluster_size > 1:
         score += 15
     if item.summary_confidence == "low":
         score += 10
@@ -903,6 +926,20 @@ def _fmt_int(value: int | None) -> str:
 def max_materiality(first: Materiality, second: Materiality) -> Materiality:
     rank = {"high": 0, "medium": 1, "low": 2}
     return first if rank[first] <= rank[second] else second
+
+
+def _combine_filing_materiality(
+    classified: Materiality,
+    scored: Materiality,
+    score: int,
+) -> Materiality:
+    if scored == "high":
+        return "high"
+    if classified == "high":
+        return "high" if score >= 80 else "medium"
+    if classified == "medium" or scored == "medium":
+        return "medium"
+    return "low"
 
 
 def _ownership_filing_materiality(

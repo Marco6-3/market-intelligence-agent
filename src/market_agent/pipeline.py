@@ -46,13 +46,12 @@ from .models import (
 from .renderers.csv_sources import write_sources_csv
 from .renderers.json_export import write_json_report
 from .renderers.markdown import render_markdown
-from .sources.akshare_cn import AkshareCNClient
+from .scope import A_SHARE_OUT_OF_SCOPE_MESSAGE, split_in_scope_stocks
 from .sources.alpha_vantage import AlphaVantageClient
 from .sources.finnhub import FinnhubClient
 from .sources.fmp import FMPClient
 from .sources.public_news import PublicNewsClient
 from .sources.sec_edgar import SECEdgarClient
-from .sources.tushare_cn import TushareCNClient
 from .sources.yfinance_us import YFinanceClient
 from .utils.text import truncate
 from .utils.time import parse_run_date, utc_now_iso
@@ -110,7 +109,9 @@ def run_daily_brief(
     cache_dir = cache_dir if cache_dir.is_absolute() else base_dir / cache_dir
 
     watchlist = load_watchlist(watchlist_path)
-    selected_stocks = select_watchlist_stocks(watchlist, scope)
+    selected_stocks, out_of_scope_stocks = split_in_scope_stocks(
+        select_watchlist_stocks(watchlist, scope)
+    )
     report_date = parse_run_date(run_date, watchlist.timezone)
     config = AppConfig.from_env(base_dir / ".env")
     cache = FileCache(cache_dir, ttl_seconds=config.cache_ttl_seconds)
@@ -122,6 +123,7 @@ def run_daily_brief(
     news: list[NewsItem] = []
     filings: list[FilingItem] = []
     earnings_calendar: list[EarningsCalendarItem] = []
+    earnings_calendar_missing_tickers: list[str] = []
 
     fmp_client = FMPClient(config.fmp_api_key, cache) if config.fmp_api_key else None
     alpha_client = (
@@ -132,13 +134,20 @@ def run_daily_brief(
     finnhub_client = FinnhubClient(config.finnhub_api_key, cache) if config.finnhub_api_key else None
     sec_client = SECEdgarClient(config.sec_user_agent, cache)
     yfinance_client = YFinanceClient() if config.yfinance_enabled else None
-    akshare_client = AkshareCNClient()
-    tushare_client = TushareCNClient(config.tushare_token) if config.tushare_token else None
     public_news_client = PublicNewsClient(cache)
 
     news_limit = max_news_per_ticker or watchlist.report_policy.max_news_per_ticker
     news_start = report_date - timedelta(days=watchlist.report_policy.only_show_fresh_news_days)
     calendar_end = report_date + timedelta(days=30)
+
+    for stock in out_of_scope_stocks:
+        _warn_once(
+            f"a_share_out_of_scope_{stock.ticker.upper()}",
+            f"{stock.ticker}: {A_SHARE_OUT_OF_SCOPE_MESSAGE}",
+            warned_keys,
+            alerts,
+            warnings,
+        )
 
     for stock in selected_stocks:
         if stock.market != "CN":
@@ -164,24 +173,25 @@ def run_daily_brief(
                     warnings,
                 )
 
-            if stock.market == "US" and fmp_client:
-                stock_news.extend(
-                    _safe_collect(
-                        lambda: fmp_client.fetch_stock_news(stock.ticker, limit=news_limit),
-                        "FMP news",
-                        stock.ticker,
+            if stock.market == "US":
+                if fmp_client:
+                    stock_news.extend(
+                        _safe_collect(
+                            lambda: fmp_client.fetch_stock_news(stock.ticker, limit=news_limit),
+                            "FMP news",
+                            stock.ticker,
+                            alerts,
+                            warnings,
+                        )
+                    )
+                else:
+                    _warn_once(
+                        "missing_fmp",
+                        "FMP_API_KEY is not configured; using public/RSS news fallback where possible.",
+                        warned_keys,
                         alerts,
                         warnings,
                     )
-                )
-            else:
-                _warn_once(
-                    "missing_fmp",
-                    "FMP_API_KEY is not configured; using public/RSS news fallback where possible.",
-                    warned_keys,
-                    alerts,
-                    warnings,
-                )
 
             if stock.market == "US" and not stock_news:
                 if alpha_client:
@@ -282,15 +292,7 @@ def run_daily_brief(
                         )
                     )
                 if not stock_earnings and not any([alpha_client, finnhub_client, fmp_client]):
-                    _warn_earnings_unavailable(
-                        stock.ticker,
-                        (
-                            "ALPHA_VANTAGE_API_KEY and FINNHUB_API_KEY are not configured, "
-                            "and FMP_API_KEY fallback is unavailable"
-                        ),
-                        alerts,
-                        warnings,
-                    )
+                    earnings_calendar_missing_tickers.append(stock.ticker)
 
             _mark_earnings_alerts(stock_earnings, report_date, alerts)
             news.extend(stock_news)
@@ -306,44 +308,16 @@ def run_daily_brief(
                     )
                 )
 
-        elif stock.market == "CN":
-            if watchlist.global_settings.enable_akshare:
-                market_snapshot.extend(
-                    _safe_collect(
-                        lambda: akshare_client.fetch_snapshot(stock),
-                        "AKShare CN snapshot",
-                        stock.ticker,
-                        alerts,
-                        warnings,
-                    )
-                )
-                news.extend(
-                    _safe_collect(
-                        lambda: akshare_client.fetch_announcements(stock, limit=news_limit),
-                        "AKShare CN announcements",
-                        stock.ticker,
-                        alerts,
-                        warnings,
-                    )
-                )
-            if tushare_client and watchlist.global_settings.enable_tushare_if_token_available:
-                market_snapshot.extend(
-                    _safe_collect(
-                        lambda: tushare_client.fetch_recent_daily(stock, report_date),
-                        "Tushare CN daily",
-                        stock.ticker,
-                        alerts,
-                        warnings,
-                    )
-                )
-            else:
-                _warn_once(
-                    "missing_tushare",
-                    "TUSHARE_TOKEN is not configured; skipping Tushare CN source.",
-                    warned_keys,
-                    alerts,
-                    warnings,
-                )
+    if earnings_calendar_missing_tickers:
+        _warn_earnings_unavailable_bulk(
+            earnings_calendar_missing_tickers,
+            (
+                "ALPHA_VANTAGE_API_KEY and FINNHUB_API_KEY are not configured, "
+                "and FMP_API_KEY fallback is unavailable"
+            ),
+            alerts,
+            warnings,
+        )
 
     news, news_clusters = _enrich_news_items(news, selected_stocks, watchlist.keywords, report_date)
     filings = _enrich_filing_items(filings, selected_stocks, watchlist.keywords, report_date)
@@ -442,19 +416,20 @@ def _warn_once(
     )
 
 
-def _warn_earnings_unavailable(
-    ticker: str,
+def _warn_earnings_unavailable_bulk(
+    tickers: list[str],
     reason: str,
     alerts: list[AlertItem],
     warnings: list[str],
 ) -> None:
-    message = f"earnings calendar unavailable because {reason}."
-    warnings.append(f"{ticker}: {message}")
+    ticker_text = ", ".join(tickers)
+    message = f"earnings calendar unavailable for {len(tickers)} US tickers because {reason}."
+    warnings.append(f"{message} Tickers: {ticker_text}.")
     alerts.append(
         AlertItem(
             severity="warning",
             message=message,
-            context=ticker,
+            context=ticker_text,
             source_name="earnings_calendar",
             source_url="not available",
             published_at=None,
@@ -799,7 +774,7 @@ def _build_missing_data(report: ReportData) -> list[str]:
         if not any(item.ticker == stock.ticker for item in report.market_snapshot):
             missing.append(f"{stock.ticker}: market snapshot not available")
         if not any(item.ticker == stock.ticker for item in report.news):
-            missing.append(f"{stock.ticker}: news / announcements not available")
+            missing.append(f"{stock.ticker}: news not available")
         if stock.market == "US" and not any(item.ticker == stock.ticker for item in report.filings):
             missing.append(f"{stock.ticker}: SEC filings not available")
     for item in report.items:

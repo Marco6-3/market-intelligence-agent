@@ -1,8 +1,16 @@
+from pathlib import Path
+
 from pydantic import ValidationError
+from typer.testing import CliRunner
 
 from market_agent.config import AppConfig
 from market_agent.models import Watchlist
-from market_agent.pipeline import select_watchlist_stocks
+from market_agent.pipeline import load_watchlist, select_watchlist_stocks
+from market_agent.cli import app
+from market_agent.scope import A_SHARE_OUT_OF_SCOPE_MESSAGE, out_of_scope_warnings
+
+
+runner = CliRunner()
 
 
 def test_watchlist_supports_legacy_stocks() -> None:
@@ -41,6 +49,35 @@ def test_watchlist_supports_daily_and_weekly_scopes() -> None:
     assert [stock.ticker for stock in select_watchlist_stocks(watchlist, "daily")] == ["NVDA"]
     assert [stock.ticker for stock in select_watchlist_stocks(watchlist, "weekly")] == ["NVDA", "ANET"]
     assert [stock.ticker for stock in select_watchlist_stocks(watchlist, "all")] == ["NVDA", "ANET"]
+
+
+def test_example_watchlist_without_cn_stocks_validates_successfully() -> None:
+    watchlist = load_watchlist(Path(__file__).parents[1] / "watchlist.example.yaml")
+
+    assert len(select_watchlist_stocks(watchlist, "daily")) == 22
+    assert out_of_scope_warnings(select_watchlist_stocks(watchlist, "all")) == []
+
+
+def test_validate_watchlist_warns_for_a_share_without_crashing(tmp_path) -> None:
+    path = tmp_path / "watchlist.yaml"
+    path.write_text(
+        "\n".join(
+            [
+                "daily_core_stocks:",
+                "  - ticker: 688008.SH",
+                "    name: Montage Technology",
+                "    market: CN",
+                "    category: Memory and Storage",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["validate-watchlist", "--watchlist", str(path)])
+
+    assert result.exit_code == 0
+    assert "Watchlist valid" in result.output
+    assert A_SHARE_OUT_OF_SCOPE_MESSAGE in result.output
 
 
 def test_watchlist_rejects_empty_stock_lists() -> None:

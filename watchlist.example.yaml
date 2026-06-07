@@ -15,8 +15,6 @@ global_settings:
   enable_investor_relations_rss: true
   enable_sec_edgar: true
   enable_yfinance: true
-  enable_akshare: false
-  enable_tushare_if_token_available: false
   no_buy_sell_recommendations: true
 
 keywords:

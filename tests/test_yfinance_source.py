@@ -48,3 +48,15 @@ def test_snapshot_from_history_builds_source_fields() -> None:
     assert snapshot.week_52_high == 130.56
     assert snapshot.week_52_low == 80.44
     assert snapshot.data_timestamp == "2026-06-01"
+
+
+def test_snapshot_preserves_non_us_market() -> None:
+    stock = StockItem(ticker="000660.KS", name="SK Hynix", market="KR")
+    history = pd.DataFrame(
+        {"Open": [100.0], "High": [103.0], "Low": [99.0], "Close": [102.0], "Volume": [1000]},
+        index=pd.to_datetime(["2026-06-01"]),
+    )
+
+    snapshot = snapshot_from_history(stock, history)[0]
+
+    assert snapshot.market == "KR"

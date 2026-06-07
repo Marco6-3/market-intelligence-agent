@@ -107,6 +107,7 @@ def test_markdown_contains_required_sections() -> None:
         "## Critical Alerts",
         "## Analyst Triage",
         "## What Changed Since Last Report",
+        "## Price Action Review",
         "## Category Summary",
         "## Watchlist Snapshot Table",
         "## High Materiality Items",
@@ -119,6 +120,8 @@ def test_markdown_contains_required_sections() -> None:
         assert heading in markdown
     assert "content_depth: article_excerpt" in markdown
     assert "published_at: 2026-06-01" in markdown
+    assert "AKShare" not in markdown
+    assert "Tushare" not in markdown
 
 
 def test_json_items_include_required_fields(tmp_path: Path) -> None:
