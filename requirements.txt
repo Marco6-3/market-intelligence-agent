@@ -1,0 +1,12 @@
+typer>=0.12,<1
+pydantic>=2.7,<3
+python-dotenv>=1.0,<2
+httpx>=0.27,<1
+pandas>=2.2,<3
+PyYAML>=6.0,<7
+yfinance>=0.2.40,<1
+pytest>=8,<9
+
+# Optional China-market data sources. Keep them installed if you want CN stocks.
+akshare>=1.14,<2
+tushare>=1.4

@@ -1,0 +1,29 @@
+timezone: Asia/Singapore
+keywords:
+  - HBM
+  - HBM3E
+  - HBM4
+  - DRAM price
+  - NAND price
+  - AI data center
+  - enterprise SSD
+  - nearline HDD
+  - memory shortage
+  - memory oversupply
+  - memory cycle
+stocks:
+  - ticker: MU
+    name: Micron
+    market: US
+    aliases: [Micron Technology, 美光]
+    themes: [HBM, DRAM, NAND, AI memory]
+  - ticker: WDC
+    name: Western Digital
+    market: US
+    aliases: [Western Digital, 西部数据]
+    themes: [HDD, NAND, AI storage]
+  - ticker: 688008.SH
+    name: 澜起科技
+    market: CN
+    aliases: [Montage Technology, 澜起]
+    themes: [DDR5, CXL, AI server]
