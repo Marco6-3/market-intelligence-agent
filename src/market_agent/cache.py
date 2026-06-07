@@ -35,7 +35,7 @@ class FileCache:
             return cached
 
         try:
-            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            with httpx.Client(timeout=12.0, follow_redirects=True) as client:
                 response = client.get(url, params=params, headers=headers)
                 response.raise_for_status()
                 data = response.json()
@@ -62,7 +62,7 @@ class FileCache:
             return str(cached)
 
         try:
-            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            with httpx.Client(timeout=12.0, follow_redirects=True) as client:
                 response = client.get(url, params=params, headers=headers)
                 response.raise_for_status()
                 data = response.text
@@ -88,7 +88,7 @@ class FileCache:
             return str(cached)
 
         try:
-            with httpx.Client(timeout=8.0, follow_redirects=True) as client:
+            with httpx.Client(timeout=3.0, follow_redirects=True) as client:
                 response = client.get(url, headers=headers)
                 response.raise_for_status()
                 final_url = str(response.url)

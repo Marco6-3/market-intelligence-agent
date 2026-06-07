@@ -36,17 +36,21 @@ class FMPClient:
             if not title:
                 continue
             summary = truncate(row.get("text"), 700)
+            source_url = str(row.get("url") or f"{url}?tickers={ticker}")
             items.append(
                 NewsItem(
                     ticker=ticker,
                     title=title,
                     summary=summary or f"title_summary: {title}",
                     summary_confidence="medium" if summary else "low",
+                    content_depth="article_excerpt" if summary else "headline_only",
                     publisher=truncate(row.get("site"), 120),
                     symbols=[str(row.get("symbol") or ticker)],
                     source_name=FMP_SOURCE,
-                    source_url=str(row.get("url") or f"{url}?tickers={ticker}"),
-                    final_url=str(row.get("url") or f"{url}?tickers={ticker}"),
+                    source_url=source_url,
+                    final_url=source_url,
+                    canonical_url=source_url,
+                    canonical_url_status="resolved",
                     published_at=coerce_datetime_string(row.get("publishedDate")),
                     fetched_at=fetched_at,
                 )

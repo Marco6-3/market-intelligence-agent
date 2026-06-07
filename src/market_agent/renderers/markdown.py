@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from collections import defaultdict
+
+from ..freshness import freshness_label
 from ..intelligence import (
     earnings_calendar_to_item,
     filing_to_item,
     market_snapshot_to_item,
     news_to_item,
 )
-from ..models import IntelligenceItem, MarketSnapshot, ReportData
+from ..models import IntelligenceItem, MarketSnapshot, ReportData, SummaryFields
+from ..scoring import high_allowed_in_critical
 
 
 def render_markdown(report: ReportData) -> str:
@@ -16,15 +20,16 @@ def render_markdown(report: ReportData) -> str:
     lines.append("")
     _render_executive_summary(lines, report, items)
     _render_critical_alerts(lines, report, items)
+    _render_analyst_triage(lines, report)
     _render_changes(lines, report)
+    _render_category_summary(lines, report)
     _render_snapshot_table(lines, report)
     _render_high_materiality(lines, items)
-    _render_analyst_review_queue(lines, report)
     _render_per_ticker_detail(lines, report, items)
-    _render_theme_tracker(lines, report)
+    _render_theme_tracker(lines, report, items)
     _render_missing_data(lines, report, items)
     _render_questions(lines, report)
-    _render_source_notes(lines, report)
+    _render_source_notes(lines)
     return "\n".join(lines)
 
 
@@ -34,26 +39,31 @@ def _render_executive_summary(
     high_count = sum(1 for item in items if item.materiality == "high")
     medium_count = sum(1 for item in items if item.materiality == "medium")
     low_count = sum(1 for item in items if item.materiality == "low")
+    fresh_count = sum(1 for item in items if freshness_label(item.freshness) == "fresh")
+    recent_count = sum(1 for item in items if freshness_label(item.freshness) == "recent")
+    stale_count = sum(1 for item in items if freshness_label(item.freshness) == "stale_context")
+    top_items = _rank_items(items)[:3]
+
     lines.append("## Executive Summary")
-    lines.append(
-        f"- Watchlist: {len(report.watchlist)} stocks; "
-        f"market snapshots: {len(report.market_snapshot)}; news: {len(report.news)}; "
-        f"filings: {len(report.filings)}; theme mentions: {len(report.theme_mentions)}."
-    )
-    lines.append(
-        f"- Materiality mix: high={high_count}, medium={medium_count}, low={low_count}."
-    )
-    if items:
-        top_items = [item for item in items if item.materiality in {"high", "medium"}][:3]
-        if top_items:
-            lines.append("- Top items to review:")
-            for item in top_items:
-                lines.append(
-                    f"  - [{item.materiality}] {item.ticker} {item.title}: "
-                    f"{_value(item.why_it_matters)}"
-                )
+    lines.append(f"- Watchlist count: {len(report.watchlist)}")
+    lines.append(f"- Market snapshots count: {len(report.market_snapshot)}")
+    lines.append(f"- News count: {len(report.news)}")
+    lines.append(f"- Filings count: {len(report.filings)}")
+    lines.append(f"- Theme mentions count: {len(report.theme_mentions)}")
+    lines.append(f"- High / medium / low count: {high_count} / {medium_count} / {low_count}")
+    lines.append(f"- Fresh / recent / stale count: {fresh_count} / {recent_count} / {stale_count}")
+    lines.append("- Top 3 things to review:")
+    if top_items:
+        for item in top_items:
+            lines.append(f"  - [{item.materiality} {item.materiality_score}] {item.ticker}: {item.title}")
     else:
-        lines.append("- No source data was collected; check API keys, public RSS access, and network.")
+        lines.append("  - not available")
+    lines.append("- Missing data summary:")
+    if report.missing_data:
+        for entry in report.missing_data[:8]:
+            lines.append(f"  - {entry}")
+    else:
+        lines.append("  - not available")
     lines.append("")
 
 
@@ -61,81 +71,147 @@ def _render_critical_alerts(
     lines: list[str], report: ReportData, items: list[IntelligenceItem]
 ) -> None:
     lines.append("## Critical Alerts")
-    critical = [item for item in items if item.materiality == "high"]
+    critical = [
+        item
+        for item in items
+        if item.materiality == "high"
+        and high_allowed_in_critical(item)
+        and (freshness_label(item.freshness) in {"fresh", "recent", "unknown"} or item.item_type in {"sec_filing", "earnings"})
+    ][:10]
     if critical:
         for item in critical:
-            lines.append(f"- [{item.ticker}] {item.title} ({item.item_type})")
-            lines.append(f"  - why_it_matters: {_value(item.why_it_matters)}")
-            lines.append(f"  - source: {item.source_name}; url: {_display_url(item)}")
-    if report.alerts:
-        for alert in report.alerts:
-            lines.append(
-                f"- [{alert.severity}] {alert.message} "
-                f"(source: {alert.source_name}, fetched_at: {alert.fetched_at})"
-            )
-    if not critical and not report.alerts:
+            _render_item(lines, item)
+    else:
         lines.append("not available")
+    if report.alerts:
+        lines.append("### Pipeline Warnings")
+        for alert in report.alerts:
+            lines.append(f"- [{alert.severity}] {alert.message} (source: {alert.source_name}, fetched_at: {alert.fetched_at})")
+    lines.append("")
+
+
+def _render_analyst_triage(lines: list[str], report: ReportData) -> None:
+    lines.append("## Analyst Triage")
+    sections = [
+        ("### Must Review Today", report.analyst_triage.must_review_today),
+        ("### Watch Items", report.analyst_triage.watch_items),
+        ("### Background Context", report.analyst_triage.background_context),
+        ("### Noise / Duplicate / Low Confidence", report.analyst_triage.noise_duplicate_low_confidence),
+    ]
+    for heading, rows in sections:
+        lines.append(heading)
+        if rows:
+            for row in rows:
+                lines.append(f"- [{row.materiality} {row.materiality_score}] {row.ticker}: {row.title}")
+                lines.append(f"  - reason: {row.reason}")
+                lines.append(f"  - follow_up_needed: {row.follow_up_needed}")
+                lines.append(f"  - evidence_strength: {row.evidence_strength}; freshness: {row.freshness_label}; url: {row.source_url}")
+        else:
+            lines.append("not available")
     lines.append("")
 
 
 def _render_changes(lines: list[str], report: ReportData) -> None:
     changes = report.changes_since_last_report
     lines.append("## What Changed Since Last Report")
-    lines.append(f"- {changes.status}")
+    lines.append(f"- Compared with previous report: {changes.status}")
     if changes.previous_report_path:
         lines.append(f"- previous_report: {changes.previous_report_path}")
+    lines.append("- Price changes:")
     if changes.price_changes:
-        lines.append("- Price changes:")
         for item in changes.price_changes:
-            lines.append(
-                f"  - {item.ticker}: {_number(item.previous_price)} -> "
-                f"{_number(item.current_price)} ({_signed_number(item.change_percent)}%)"
-            )
-    if changes.new_filings:
-        lines.append("- New filings:")
-        for item in changes.new_filings[:10]:
-            lines.append(f"  - [{item.materiality}] {item.ticker}: {item.title}")
-    if changes.new_news:
-        lines.append("- New news:")
-        for item in changes.new_news[:10]:
-            lines.append(f"  - [{item.materiality}] {item.ticker}: {item.title}")
+            lines.append(f"  - {item.ticker}: {_number(item.previous_price)} -> {_number(item.current_price)} ({_signed_number(item.change_percent)}%)")
+    else:
+        lines.append("  - not available")
+    lines.append("- New official filings:")
+    _render_item_titles(lines, changes.new_filings)
+    lines.append("- New fresh news:")
+    _render_item_titles(lines, changes.newly_published)
+    lines.append("- Newly discovered stale items:")
+    _render_item_titles(lines, changes.newly_discovered_stale)
+    lines.append("- New theme mentions:")
     if changes.new_theme_mentions:
-        lines.append("- New theme mentions:")
         for mention in changes.new_theme_mentions[:20]:
             lines.append(f"  - {mention}")
-    if (
-        changes.previous_report_path
-        and not changes.price_changes
-        and not changes.new_filings
-        and not changes.new_news
-        and not changes.new_theme_mentions
-    ):
-        lines.append("- No tracked changes detected.")
+    else:
+        lines.append("  - not available")
+    lines.append("- Removed / no longer active alerts:")
+    if changes.removed_or_no_longer_active_alerts:
+        for title in changes.removed_or_no_longer_active_alerts:
+            lines.append(f"  - {title}")
+    else:
+        lines.append("  - not available")
+    lines.append("")
+
+
+def _render_category_summary(lines: list[str], report: ReportData) -> None:
+    lines.append("## Category Summary")
+    desired = [
+        "AI Compute",
+        "AI ASIC and Networking",
+        "Semiconductor Equipment",
+        "Memory and Storage",
+        "AI Cloud Demand",
+        "Robotics / Physical AI",
+    ]
+    summaries = {summary.category: summary for summary in report.category_summary}
+    for category in desired:
+        matched = _category_lookup(summaries, category)
+        lines.append(f"### {category}")
+        if matched:
+            lines.append(f"- Key movers: {_list_value(matched.key_movers)}")
+            lines.append(f"- Important news: {_list_value(matched.important_news)}")
+            if category == "AI Compute":
+                lines.append(f"- Demand signal: {matched.demand_signal}")
+                lines.append(f"- Risk signal: {matched.risk_signal}")
+            elif category == "AI ASIC and Networking":
+                lines.append(f"- Hyperscaler custom silicon signal: {matched.demand_signal}")
+                lines.append(f"- Networking / optical signal: {matched.risk_signal}")
+            elif category == "Semiconductor Equipment":
+                lines.append(f"- Capex signal: {matched.demand_signal}")
+                lines.append(f"- Advanced node / EUV signal: {matched.demand_signal}")
+                lines.append(f"- Export control / geopolitical risk: {matched.risk_signal}")
+            elif category == "Memory and Storage":
+                lines.append(f"- HBM signal: {matched.demand_signal}")
+                lines.append("- DRAM / NAND pricing signal: not available")
+                lines.append("- HDD / SSD data center demand signal: not available")
+                lines.append(f"- Shortage / oversupply signal: {matched.risk_signal}")
+            elif category == "AI Cloud Demand":
+                lines.append(f"- Capex changes: {matched.demand_signal}")
+                lines.append("- Data center buildout: not available")
+                lines.append("- AI chip order / delay signal: not available")
+            else:
+                lines.append(f"- Physical AI signal: {matched.demand_signal}")
+                lines.append("- Factory automation signal: not available")
+                lines.append("- Medical robotics signal: not available")
+                lines.append("- Warehouse robotics signal: not available")
+        else:
+            lines.append("- Key movers: not available")
+            lines.append("- Important news: not available")
     lines.append("")
 
 
 def _render_snapshot_table(lines: list[str], report: ReportData) -> None:
     lines.append("## Watchlist Snapshot Table")
     lines.append(
-        "| Ticker | Name | Currency | Price | Change % | Previous Close | Open | Day High | "
+        "| Ticker | Name | Category | Currency | Price | Change % | Previous Close | Open | Day High | "
         "Day Low | Volume | Avg Volume | Market Cap | 52W High | 52W Low | Data Timestamp | Source |"
     )
     lines.append(
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"
     )
     snapshots = _latest_snapshot_by_ticker(report.market_snapshot)
     for stock in report.watchlist:
         item = snapshots.get(stock.ticker)
         if not item:
             lines.append(
-                f"| {_escape(stock.ticker)} | {_escape(stock.name)} | not available | not available | "
+                f"| {_escape(stock.ticker)} | {_escape(stock.name)} | {_escape(stock.category)} | not available | not available | "
                 "not available | not available | not available | not available | not available | "
-                "not available | not available | not available | not available | not available | "
-                "not available | not available |"
+                "not available | not available | not available | not available | not available | not available | not available |"
             )
             continue
         lines.append(
-            f"| {_escape(item.ticker)} | {_escape(item.name or stock.name)} | "
+            f"| {_escape(item.ticker)} | {_escape(item.name or stock.name)} | {_escape(stock.category)} | "
             f"{_escape(item.currency or 'not available')} | {_number(item.price)} | "
             f"{_number(item.change_percent)} | {_number(item.previous_close)} | "
             f"{_number(item.open)} | {_number(item.day_high)} | {_number(item.day_low)} | "
@@ -149,43 +225,10 @@ def _render_snapshot_table(lines: list[str], report: ReportData) -> None:
 
 def _render_high_materiality(lines: list[str], items: list[IntelligenceItem]) -> None:
     lines.append("## High Materiality Items")
-    high = [item for item in items if item.materiality == "high"]
-    medium = [item for item in items if item.materiality == "medium"]
+    high = [item for item in _rank_items(items) if item.materiality == "high" and high_allowed_in_critical(item)]
     if high:
-        lines.append("### High")
         for item in high:
             _render_item(lines, item)
-    else:
-        lines.append("### High")
-        lines.append("not available")
-    lines.append("")
-    if medium:
-        lines.append("### Medium")
-        for item in medium:
-            _render_item(lines, item)
-    else:
-        lines.append("### Medium")
-        lines.append("not available")
-    lines.append("")
-
-
-def _render_analyst_review_queue(lines: list[str], report: ReportData) -> None:
-    lines.append("## Analyst Review Queue")
-    if report.analyst_review_queue:
-        for item in report.analyst_review_queue[:5]:
-            lines.append(f"- **{item.ticker} - {item.core_claim}**")
-            lines.append(f"  - why_it_matters: {_value(item.why_it_matters)}")
-            lines.append(f"  - evidence_strength: {_value(item.evidence_strength)}")
-            lines.append(f"  - possible_thesis_effect: {item.possible_thesis_effect}")
-            if item.follow_up_questions:
-                lines.append("  - follow_up_questions:")
-                for question in item.follow_up_questions:
-                    lines.append(f"    - {question}")
-            lines.append(
-                f"  - item_type: {item.item_type}; materiality: {item.materiality}; "
-                f"source_quality: {item.source_quality}; freshness: {item.freshness}; "
-                f"url: {item.source_url}"
-            )
     else:
         lines.append("not available")
     lines.append("")
@@ -197,33 +240,55 @@ def _render_per_ticker_detail(
     lines.append("## Per-Ticker Detail")
     for stock in report.watchlist:
         lines.append(f"### {stock.ticker} - {stock.name}")
-        ticker_items = [item for item in items if item.ticker == stock.ticker]
-        prioritized = [item for item in ticker_items if item.materiality in {"high", "medium"}]
-        if prioritized:
-            for item in prioritized:
+        ticker_items = [item for item in _rank_items(items) if item.ticker == stock.ticker]
+        lines.append("#### Top Items")
+        if ticker_items:
+            for item in ticker_items[:5]:
                 _render_item(lines, item)
         else:
             lines.append("not available")
-
-        low_items = [item for item in ticker_items if item.materiality == "low"]
-        lines.append("#### Low Materiality Appendix")
-        if low_items:
-            for item in low_items:
-                _render_item(lines, item)
+        lines.append("#### Market Snapshot")
+        snapshot = next((item for item in ticker_items if item.item_type == "market_snapshot"), None)
+        lines.append(snapshot.summary.what_happened if snapshot else "not available")
+        lines.append("#### Filings Summary")
+        _render_item_titles(lines, [item for item in ticker_items if item.item_type == "sec_filing"][:5])
+        lines.append("#### News Summary")
+        _render_item_titles(lines, [item for item in ticker_items if item.item_type in {"public_news", "ir_news", "cn_announcement"}][:5])
+        lines.append("#### Theme Mentions")
+        themes = sorted({theme for item in ticker_items for theme in item.related_themes})
+        lines.append(", ".join(themes) if themes else "not available")
+        lines.append("#### Missing Data")
+        missing = [entry for entry in report.missing_data if entry.startswith(f"{stock.ticker}:")]
+        if missing:
+            for entry in missing:
+                lines.append(f"- {entry}")
         else:
             lines.append("not available")
         lines.append("")
 
 
-def _render_theme_tracker(lines: list[str], report: ReportData) -> None:
+def _render_theme_tracker(
+    lines: list[str], report: ReportData, items: list[IntelligenceItem]
+) -> None:
     lines.append("## Theme Tracker")
-    if report.theme_mentions:
-        for item in report.theme_mentions:
-            lines.append(
-                f"- {item.ticker} / {item.theme}: {item.title}; "
-                f"source: {item.source_name}; published_at: {_value(item.published_at)}; "
-                f"url: {item.source_url}"
-            )
+    grouped: dict[str, list[IntelligenceItem]] = defaultdict(list)
+    for item in items:
+        for theme in item.related_themes:
+            grouped[theme].append(item)
+    if grouped:
+        for theme in sorted(grouped):
+            theme_items = _rank_items(grouped[theme])
+            tickers = sorted({item.ticker for item in theme_items})
+            top_fresh = [item for item in theme_items if freshness_label(item.freshness) in {"fresh", "recent"}][:3]
+            signal = _theme_signal(theme_items)
+            evidence = _theme_evidence(theme_items)
+            lines.append(f"### {theme}")
+            lines.append(f"- mention count: {len(theme_items)}")
+            lines.append(f"- related tickers: {', '.join(tickers) if tickers else 'not available'}")
+            lines.append("- top fresh items:")
+            _render_item_titles(lines, top_fresh)
+            lines.append(f"- positive / negative / mixed signal: {signal}")
+            lines.append(f"- evidence strength: {evidence}")
     else:
         lines.append("not available")
     lines.append("")
@@ -233,30 +298,14 @@ def _render_missing_data(
     lines: list[str], report: ReportData, items: list[IntelligenceItem]
 ) -> None:
     lines.append("## Missing Data / Weak Claims")
-    weak: list[str] = []
-    for stock in report.watchlist:
-        if not any(item.ticker == stock.ticker for item in report.market_snapshot):
-            weak.append(f"{stock.ticker}: market snapshot not available")
-        if not any(item.ticker == stock.ticker for item in report.news):
-            weak.append(f"{stock.ticker}: news / announcements not available")
-        if stock.market == "US" and not any(item.ticker == stock.ticker for item in report.filings):
-            weak.append(f"{stock.ticker}: SEC filings not available")
+    entries = list(report.missing_data)
     for item in items:
-        if (
-            item.confidence == "low"
-            or item.summary_confidence == "low"
-            or item.source_quality in {"low", "unknown"}
-            or item.source_url == "not available"
-        ):
-            weak.append(
-                f"{item.ticker}: {item.title} has confidence={item.confidence}, "
-                f"summary_confidence={item.summary_confidence}, "
-                f"source_quality={item.source_quality}, source_url={item.source_url}"
-            )
-    for alert in report.alerts:
-        weak.append(f"warning: {alert.message}")
-    if weak:
-        for entry in weak:
+        if item.materiality in {"high", "medium"} and item.content_depth == "headline_only":
+            entries.append(f"{item.ticker}: {item.title} is headline_only")
+        if item.materiality in {"high", "medium"} and item.summary.evidence_strength == "low":
+            entries.append(f"{item.ticker}: {item.title} has weak evidence")
+    if entries:
+        for entry in _dedupe_strings(entries):
             lines.append(f"- {entry}")
     else:
         lines.append("not available")
@@ -273,66 +322,73 @@ def _render_questions(lines: list[str], report: ReportData) -> None:
     lines.append("")
 
 
-def _render_source_notes(lines: list[str], report: ReportData) -> None:
+def _render_source_notes(lines: list[str]) -> None:
     lines.append("## Source Notes")
-    lines.append(
-        "JSON `items` entries include ticker, item_type, title, summary, why_it_matters, "
-        "materiality, thesis_effect, confidence, freshness, source_quality, summary_confidence, "
-        "source_name, source_url, final_url, aggregator_url, published_at, and fetched_at."
-    )
-    lines.append(
-        "News is collected from configured APIs when available, then public RSS / Investor Relations "
-        "fallbacks where possible. Missing source data is reported as `not available` or as warnings."
-    )
-    lines.append(
-        "Google News RSS entries use `final_url` as the default report URL when resolved; "
-        "`aggregator_url` preserves the original Google News RSS link."
-    )
+    lines.append("- All records include source_url/source_name/published_at/fetched_at in JSON and source CSV.")
+    lines.append("- yfinance is a non-official market data source and is only used for personal research context.")
+    lines.append("- Google News RSS is an aggregator fallback; canonical_url is preferred when it can be resolved.")
+    lines.append("- This system collects, summarizes, classifies, and triages information; it does not provide buy/sell recommendations, target prices, or automated trading signals.")
     lines.append("")
 
 
 def _render_item(lines: list[str], item: IntelligenceItem) -> None:
+    summary = _summary(item.summary)
     lines.append(f"- **{item.ticker} - {item.title}**")
     lines.append(
         f"  - item_type: {item.item_type}; materiality: {item.materiality}; "
-        f"thesis_effect: {item.thesis_effect}; confidence: {item.confidence}; "
-        f"summary_confidence: {item.summary_confidence}"
+        f"score: {item.materiality_score}; thesis_effect: {item.thesis_effect}; confidence: {item.confidence}"
     )
     lines.append(
-        f"  - freshness: {item.freshness}; source_quality: {item.source_quality}; "
-        f"cluster_id: {_value(item.cluster_id)}; cluster_size: {item.cluster_size}"
+        f"  - freshness: {freshness_label(item.freshness)}; content_depth: {item.content_depth}; "
+        f"evidence_strength: {summary.evidence_strength}; source_quality: {item.source_quality}"
     )
-    lines.append(f"  - summary: {_value(item.summary)}")
+    lines.append(f"  - what_happened: {_value(summary.what_happened)}")
     lines.append(f"  - why_it_matters: {_value(item.why_it_matters)}")
-    if item.related_themes:
-        lines.append(f"  - related_themes: {', '.join(item.related_themes)}")
-    elif item.item_type in {"news", "public_news", "ir_news", "cn_announcement"}:
-        lines.append("  - related_themes: not available")
+    lines.append(f"  - possible_financial_impact: {_value(summary.possible_financial_impact)}")
+    lines.append(f"  - follow_up_needed: {_value(summary.follow_up_needed)}")
+    lines.append(f"  - related_themes: {', '.join(item.related_themes) if item.related_themes else 'not available'}")
+    lines.append(f"  - matched_terms: {', '.join(item.matched_terms) if item.matched_terms else 'not available'}")
     lines.append(
         f"  - source: {item.source_name}; published_at: {_value(item.published_at)}; "
         f"fetched_at: {item.fetched_at}; url: {_display_url(item)}"
     )
     if item.aggregator_url:
-        lines.append(f"  - aggregator_url: {item.aggregator_url}")
+        suffix = "aggregator link only" if not item.canonical_url else "aggregator preserved"
+        lines.append(f"  - aggregator_url: {item.aggregator_url} ({suffix})")
     if item.cluster_sources:
-        lines.append("  - cluster_sources:")
-        for source in item.cluster_sources[:6]:
-            lines.append(
-                f"    - {source.publisher or source.source_name}; "
-                f"quality={source.source_quality}; freshness={source.freshness}; "
-                f"published_at={_value(source.published_at)}; url={source.final_url or source.source_url}"
-            )
+        lines.append(f"  - news_cluster: {item.cluster_id}; source_count: {len(item.cluster_sources)}")
+
+
+def _render_item_titles(lines: list[str], items: list[IntelligenceItem]) -> None:
+    if items:
+        for item in items[:10]:
+            lines.append(f"  - [{item.materiality} {item.materiality_score}] {item.ticker}: {item.title}")
+    else:
+        lines.append("  - not available")
 
 
 def _items_for_report(report: ReportData) -> list[IntelligenceItem]:
     if report.items:
         return report.items
+    stocks_by_ticker = {stock.ticker: stock for stock in report.watchlist}
     items: list[IntelligenceItem] = []
-    items.extend(market_snapshot_to_item(snapshot) for snapshot in report.market_snapshot)
+    items.extend(market_snapshot_to_item(snapshot, stocks_by_ticker.get(snapshot.ticker)) for snapshot in report.market_snapshot)
     items.extend(news_to_item(item) for item in report.news)
     items.extend(filing_to_item(item) for item in report.filings)
-    items.extend(earnings_calendar_to_item(item) for item in report.earnings_calendar)
+    items.extend(earnings_calendar_to_item(item, stocks_by_ticker.get(item.ticker)) for item in report.earnings_calendar)
     return items
+
+
+def _rank_items(items: list[IntelligenceItem]) -> list[IntelligenceItem]:
+    return sorted(
+        items,
+        key=lambda item: (
+            -item.materiality_score,
+            {"high": 0, "medium": 1, "low": 2}.get(item.materiality, 9),
+            item.ticker,
+            item.title,
+        ),
+    )
 
 
 def _latest_snapshot_by_ticker(items: list[MarketSnapshot]) -> dict[str, MarketSnapshot]:
@@ -342,14 +398,72 @@ def _latest_snapshot_by_ticker(items: list[MarketSnapshot]) -> dict[str, MarketS
     return latest
 
 
+def _category_lookup(summaries: dict[str, object], category: str) -> object | None:
+    if category in summaries:
+        return summaries[category]
+    if category == "AI ASIC and Networking":
+        return summaries.get("AI ASIC and Networking") or summaries.get("AI Networking")
+    if category == "Memory and Storage":
+        for key in ("Memory", "Storage", "NAND and SSD", "Memory and Semiconductors"):
+            if key in summaries:
+                return summaries[key]
+    if category == "Robotics / Physical AI":
+        for key in ("Robotics", "Warehouse Robotics", "Robotics and Semiconductor Test", "Industrial Automation"):
+            if key in summaries:
+                return summaries[key]
+    return None
+
+
+def _theme_signal(items: list[IntelligenceItem]) -> str:
+    effects = {item.thesis_effect for item in items}
+    if "supports_thesis" in effects and "weakens_thesis" in effects:
+        return "mixed"
+    if "supports_thesis" in effects:
+        return "positive"
+    if "weakens_thesis" in effects:
+        return "negative"
+    return "mixed" if effects else "not available"
+
+
+def _theme_evidence(items: list[IntelligenceItem]) -> str:
+    if any(item.summary.evidence_strength == "high" for item in items):
+        return "high"
+    if any(item.summary.evidence_strength == "medium" for item in items):
+        return "medium"
+    return "low"
+
+
+def _summary(value: object) -> SummaryFields:
+    if isinstance(value, SummaryFields):
+        return value
+    if isinstance(value, dict):
+        return SummaryFields.model_validate(value)
+    return SummaryFields.from_text(value)
+
+
+def _display_url(item: IntelligenceItem) -> str:
+    return item.canonical_url or item.final_url or item.source_url
+
+
+def _list_value(values: list[str]) -> str:
+    return "; ".join(values) if values else "not available"
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
 def _value(value: object) -> str:
     if value is None or value == "":
         return "not available"
     return str(value)
-
-
-def _display_url(item: IntelligenceItem) -> str:
-    return item.final_url or item.source_url
 
 
 def _number(value: float | None) -> str:

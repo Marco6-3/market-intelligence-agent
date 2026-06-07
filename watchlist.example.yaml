@@ -1,29 +1,304 @@
 timezone: Asia/Singapore
+
+report_policy:
+  max_items_per_ticker: 5
+  max_news_per_ticker: 3
+  max_critical_alerts_per_day: 10
+  max_low_materiality_items: 20
+  only_show_fresh_news_days: 7
+  stale_news_days: 14
+  weekly_extended_watchlist_day: Sunday
+
+global_settings:
+  enable_public_news_fallback: true
+  enable_google_news_rss: true
+  enable_investor_relations_rss: true
+  enable_sec_edgar: true
+  enable_yfinance: true
+  enable_akshare: false
+  enable_tushare_if_token_available: false
+  no_buy_sell_recommendations: true
+
 keywords:
+  - AI accelerator
+  - GPU
+  - custom AI chip
+  - AI ASIC
+  - AI networking
+  - inference
+  - training cluster
+  - data center capex
+  - advanced node
+  - 2nm
+  - 3nm
+  - EUV
+  - High-NA EUV
+  - advanced packaging
+  - CoWoS
+  - wafer fab equipment
+  - yield management
   - HBM
   - HBM3E
   - HBM4
+  - high-bandwidth memory
   - DRAM price
   - NAND price
-  - AI data center
   - enterprise SSD
   - nearline HDD
   - memory shortage
   - memory oversupply
   - memory cycle
-stocks:
+  - robotics
+  - humanoid robot
+  - embodied AI
+  - physical AI
+  - collaborative robot
+  - cobot
+  - AMR
+  - autonomous mobile robot
+  - warehouse automation
+  - surgical robot
+  - actuator
+  - harmonic reducer
+  - servo motor
+  - machine vision
+
+daily_core_stocks:
+  - ticker: NVDA
+    name: Nvidia
+    market: US
+    category: AI Compute
+    aliases: [Nvidia, NVIDIA, 英伟达]
+    themes: [AI GPU, AI accelerator, CUDA, Blackwell, Rubin, Vera Rubin, robotics, HBM demand]
+
+  - ticker: AMD
+    name: AMD
+    market: US
+    category: AI Compute
+    aliases: [AMD, Advanced Micro Devices, 超威半导体]
+    themes: [AI GPU, Instinct, MI400, MI500, EPYC, data center CPU]
+
+  - ticker: AVGO
+    name: Broadcom
+    market: US
+    category: AI ASIC and Networking
+    aliases: [Broadcom, 博通]
+    themes: [custom AI chip, AI ASIC, AI networking, hyperscaler ASIC, switching]
+
+  - ticker: MRVL
+    name: Marvell Technology
+    market: US
+    category: AI ASIC and Networking
+    aliases: [Marvell, Marvell Technology, 美满电子]
+    themes: [custom silicon, AI networking, optical interconnect, data center infrastructure]
+
+  - ticker: TSM
+    name: TSMC
+    market: US
+    category: Foundry
+    aliases: [TSMC, Taiwan Semiconductor, 台积电, 台積電]
+    themes: [advanced node, 2nm, 3nm, CoWoS, advanced packaging, AI chip foundry]
+
+  - ticker: ASML
+    name: ASML
+    market: US
+    category: Semiconductor Equipment
+    aliases: [ASML, 阿斯麦]
+    themes: [EUV, High-NA EUV, lithography, advanced node, semiconductor equipment]
+
+  - ticker: AMAT
+    name: Applied Materials
+    market: US
+    category: Semiconductor Equipment
+    aliases: [Applied Materials, 应用材料]
+    themes: [wafer fab equipment, materials engineering, advanced packaging, memory equipment]
+
+  - ticker: LRCX
+    name: Lam Research
+    market: US
+    category: Semiconductor Equipment
+    aliases: [Lam Research, Lam, 泛林]
+    themes: [memory equipment, HBM equipment, DRAM capex, NAND capex, wafer fab equipment]
+
+  - ticker: KLAC
+    name: KLA
+    market: US
+    category: Semiconductor Equipment
+    aliases: [KLA, KLA Corporation]
+    themes: [process control, yield management, inspection, metrology, advanced node]
+
   - ticker: MU
     name: Micron
     market: US
-    aliases: [Micron Technology, 美光]
-    themes: [HBM, DRAM, NAND, AI memory]
+    category: Memory and Storage
+    aliases: [Micron Technology, Micron, 美光]
+    themes: [HBM, HBM3E, HBM4, DRAM, NAND, AI memory, memory cycle]
+
   - ticker: WDC
     name: Western Digital
     market: US
+    category: Memory and Storage
     aliases: [Western Digital, 西部数据]
-    themes: [HDD, NAND, AI storage]
-  - ticker: 688008.SH
-    name: 澜起科技
-    market: CN
-    aliases: [Montage Technology, 澜起]
-    themes: [DDR5, CXL, AI server]
+    themes: [nearline HDD, AI data center storage, HDD, storage capacity]
+
+  - ticker: STX
+    name: Seagate Technology
+    market: US
+    category: Memory and Storage
+    aliases: [Seagate, Seagate Technology, 希捷]
+    themes: [nearline HDD, HAMR, mass capacity storage, AI data center storage]
+
+  - ticker: SNDK
+    name: SanDisk
+    market: US
+    category: Memory and Storage
+    aliases: [SanDisk, Sandisk, 闪迪]
+    themes: [NAND, NAND Flash, enterprise SSD, flash memory, memory shortage]
+
+  - ticker: 000660.KS
+    name: SK Hynix
+    market: KR
+    category: Memory and Storage
+    aliases: [SK Hynix, SK海力士, 海力士]
+    themes: [HBM, HBM3E, HBM4, DRAM, AI memory, memory shortage]
+
+  - ticker: 005930.KS
+    name: Samsung Electronics
+    market: KR
+    category: Memory and Storage
+    aliases: [Samsung Electronics, Samsung, 三星电子, 三星]
+    themes: [HBM, HBM4, DRAM, NAND, AI memory, memory competition]
+
+  - ticker: MSFT
+    name: Microsoft
+    market: US
+    category: AI Cloud Demand
+    aliases: [Microsoft, Azure, 微软]
+    themes: [Azure, OpenAI, AI cloud, data center capex, enterprise AI]
+
+  - ticker: GOOGL
+    name: Alphabet
+    market: US
+    category: AI Cloud Demand
+    aliases: [Alphabet, Google, Google Cloud, 谷歌]
+    themes: [Google Cloud, TPU, Gemini, AI search, data center capex]
+
+  - ticker: AMZN
+    name: Amazon
+    market: US
+    category: AI Cloud Demand
+    aliases: [Amazon, AWS, 亚马逊]
+    themes: [AWS, Trainium, Inferentia, AI cloud, data center capex]
+
+  - ticker: META
+    name: Meta Platforms
+    market: US
+    category: AI Cloud Demand
+    aliases: [Meta, Facebook, Instagram, Meta AI]
+    themes: [AI recommendation, Llama, data center capex, AI infrastructure]
+
+  - ticker: ISRG
+    name: Intuitive Surgical
+    market: US
+    category: Robotics / Physical AI
+    aliases: [Intuitive Surgical, da Vinci, 直觉外科]
+    themes: [surgical robot, da Vinci, medical robotics, robotic surgery]
+
+  - ticker: TER
+    name: Teradyne
+    market: US
+    category: Robotics / Physical AI
+    aliases: [Teradyne, Universal Robots, MiR]
+    themes: [semiconductor test, collaborative robot, cobot, AMR, robotics platform]
+
+  - ticker: SYM
+    name: Symbotic
+    market: US
+    category: Robotics / Physical AI
+    aliases: [Symbotic]
+    themes: [warehouse automation, AI robotics, supply chain automation, autonomous warehouse]
+
+weekly_extended_stocks:
+  - ticker: PLTR
+    name: Palantir
+    market: US
+    category: AI Software
+    aliases: [Palantir]
+    themes: [AI platform, enterprise AI, government AI, ontology]
+
+  - ticker: ORCL
+    name: Oracle
+    market: US
+    category: AI Cloud Demand
+    aliases: [Oracle]
+    themes: [AI cloud, database, cloud infrastructure, data center capex]
+
+  - ticker: SNOW
+    name: Snowflake
+    market: US
+    category: AI Data Platform
+    aliases: [Snowflake]
+    themes: [data cloud, enterprise AI data, analytics]
+
+  - ticker: DELL
+    name: Dell Technologies
+    market: US
+    category: AI Server
+    aliases: [Dell, Dell Technologies]
+    themes: [AI server, enterprise AI infrastructure, Nvidia server]
+
+  - ticker: SMCI
+    name: Super Micro Computer
+    market: US
+    category: AI Server
+    aliases: [Supermicro, Super Micro Computer, SMCI]
+    themes: [AI server, liquid cooling, rack-scale AI]
+
+  - ticker: ANET
+    name: Arista Networks
+    market: US
+    category: AI ASIC and Networking
+    aliases: [Arista, Arista Networks]
+    themes: [data center switching, AI networking, Ethernet AI fabric]
+
+  - ticker: VRT
+    name: Vertiv
+    market: US
+    category: Data Center Infrastructure
+    aliases: [Vertiv]
+    themes: [data center cooling, power infrastructure, liquid cooling]
+
+  - ticker: ETN
+    name: Eaton
+    market: US
+    category: Power Infrastructure
+    aliases: [Eaton]
+    themes: [electrical equipment, data center power, grid infrastructure]
+
+  - ticker: ROK
+    name: Rockwell Automation
+    market: US
+    category: Robotics / Physical AI
+    aliases: [Rockwell Automation, Rockwell]
+    themes: [factory automation, industrial software, robotics, smart manufacturing]
+
+  - ticker: FANUY
+    name: FANUC ADR
+    market: US
+    category: Robotics / Physical AI
+    aliases: [FANUC, Fanuc]
+    themes: [industrial robot, factory automation, CNC, servo]
+
+  - ticker: ABBNY
+    name: ABB ADR
+    market: US
+    category: Robotics / Physical AI
+    aliases: [ABB]
+    themes: [industrial automation, electrification, robotics transaction, power automation]
+
+  - ticker: CGNX
+    name: Cognex
+    market: US
+    category: Robotics / Physical AI
+    aliases: [Cognex]
+    themes: [machine vision, robot vision, factory automation, inspection]

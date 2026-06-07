@@ -41,7 +41,11 @@ class SECEdgarClient:
             primary_document = _array_value(recent, "primaryDocument", index)
             description = _array_value(recent, "primaryDocDescription", index)
             source_url = _filing_url(cik, accession_number, primary_document) or url
-            document_text = self._safe_primary_document_text(source_url)
+            document_text = (
+                self._safe_primary_document_text(source_url)
+                if _needs_primary_document_text(form, description)
+                else None
+            )
             materiality, why_it_matters, thesis_effect, confidence = classify_filing_materiality(
                 form=form,
                 description=description,
@@ -68,6 +72,8 @@ class SECEdgarClient:
                     source_name=SEC_SOURCE,
                     source_url=source_url,
                     final_url=source_url,
+                    canonical_url=source_url,
+                    canonical_url_status="resolved",
                     published_at=coerce_datetime_string(filing_date),
                     fetched_at=fetched_at,
                 )
@@ -123,3 +129,11 @@ def _filing_summary(form: str, filing_date: str | None, description: str | None)
     if description:
         parts.append(f"description={truncate(description, 240)}")
     return "; ".join(parts)
+
+
+def _needs_primary_document_text(form: object, description: object) -> bool:
+    form_upper = str(form or "").upper()
+    description_text = str(description or "").casefold()
+    if form_upper in {"4", "FORM 4", "144", "FORM 144", "SD"}:
+        return True
+    return "earnings release" in description_text or "results of operations" in description_text

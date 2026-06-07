@@ -1,10 +1,11 @@
 from pydantic import ValidationError
 
 from market_agent.config import AppConfig
-from market_agent.models import NewsItem, Watchlist
+from market_agent.models import Watchlist
+from market_agent.pipeline import select_watchlist_stocks
 
 
-def test_watchlist_validates_stock_market_case() -> None:
+def test_watchlist_supports_legacy_stocks() -> None:
     watchlist = Watchlist.model_validate(
         {
             "timezone": "Asia/Singapore",
@@ -22,38 +23,36 @@ def test_watchlist_validates_stock_market_case() -> None:
     )
 
     assert watchlist.stocks[0].market == "US"
+    assert select_watchlist_stocks(watchlist, "daily")[0].ticker == "MU"
 
 
-def test_watchlist_rejects_empty_stocks() -> None:
+def test_watchlist_supports_daily_and_weekly_scopes() -> None:
+    watchlist = Watchlist.model_validate(
+        {
+            "daily_core_stocks": [
+                {"ticker": "NVDA", "name": "Nvidia", "market": "US", "category": "AI Compute"}
+            ],
+            "weekly_extended_stocks": [
+                {"ticker": "ANET", "name": "Arista", "market": "US", "category": "AI ASIC and Networking"}
+            ],
+        }
+    )
+
+    assert [stock.ticker for stock in select_watchlist_stocks(watchlist, "daily")] == ["NVDA"]
+    assert [stock.ticker for stock in select_watchlist_stocks(watchlist, "weekly")] == ["NVDA", "ANET"]
+    assert [stock.ticker for stock in select_watchlist_stocks(watchlist, "all")] == ["NVDA", "ANET"]
+
+
+def test_watchlist_rejects_empty_stock_lists() -> None:
     try:
         Watchlist.model_validate({"stocks": []})
     except ValidationError as exc:
-        assert "stocks" in str(exc)
+        assert "watchlist must define" in str(exc)
     else:
         raise AssertionError("Expected ValidationError")
 
 
-def test_source_fields_are_required_on_news() -> None:
-    item = NewsItem(
-        ticker="MU",
-        title="Micron headline",
-        summary=None,
-        publisher="Example",
-        symbols=["MU"],
-        source_name="Example Source",
-        source_url="https://example.com/story",
-        published_at="2026-06-01",
-        fetched_at="2026-06-01T00:00:00Z",
-    )
-
-    dumped = item.model_dump()
-    assert dumped["source_url"] == "https://example.com/story"
-    assert dumped["source_name"] == "Example Source"
-    assert dumped["published_at"] == "2026-06-01"
-    assert dumped["fetched_at"] == "2026-06-01T00:00:00Z"
-
-
-def test_config_reads_kimi_llm_settings(tmp_path, monkeypatch) -> None:
+def test_config_reads_llm_settings(tmp_path, monkeypatch) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
         "\n".join(

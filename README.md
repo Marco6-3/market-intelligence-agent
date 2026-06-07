@@ -1,218 +1,127 @@
-# market-intelligence-agent
+# AI Hard-Tech Market Intelligence Agent
 
-`market-intelligence-agent` 是一个本地 Python CLI 工具，用于按 `watchlist.yaml` 中的股票列表收集行情、新闻、财报日历、SEC filings、A 股快照等信息，并生成 Markdown、JSON 和 sources.csv 溯源文件。
+这是一个面向个人投研的 AI 硬科技产业链情报采集器。它每天围绕 watchlist 抓取行情、新闻、SEC filings、财报日历、主题变化，并生成 Markdown、JSON、CSV，方便继续交给 ChatGPT 做深度分析。
 
-本项目只做信息收集和研究摘要，不做自动交易，也不会输出“买入/卖出”指令。
+它不是交易机器人，不输出买入/卖出建议，不给目标价，也不编造缺失数据。数据缺失会写 `not available`，标题级新闻和 Google News RSS 聚合链接会降低 confidence。
 
-## 功能范围
+## 覆盖方向
 
-- 读取 `watchlist.yaml`。
-- 使用 Financial Modeling Prep 获取美股新闻、行情和财报日历。
-- 使用 yfinance / Yahoo Finance 获取美股行情快照。yfinance 不需要 API key。
-- 在 FMP 不可用时，可使用 Alpha Vantage 或 Finnhub 作为美股新闻/财报日历备用源。
-- 使用 SEC EDGAR data APIs 获取美股最近 filings。
-- 使用 AKShare 获取 A 股行情快照。
-- 如果配置了 `TUSHARE_TOKEN`，额外尝试读取 Tushare A 股日线数据。
-- 对新闻增加 `freshness` 分层：`fresh` / `recent` / `stale` / `background` / `unknown`。
-- 对新闻增加 `source_quality` 分层：`high` / `medium` / `low` / `unknown`。
-- 对 Google News RSS 做 best-effort 真实链接解析，输出 `final_url` 和 `aggregator_url`；Markdown 默认展示 `final_url`。
-- 对相似新闻做 cluster 合并，报告只展示代表项，并在 `cluster_sources` 中保留多个来源。
-- 对标题型新闻使用 `title_summary:`，并标记 `summary_confidence=low`，避免假装已经读过全文。
-- 输出 `## Analyst Review Queue`，每天最多列出 5 个最值得人工复核的 item 或 cluster。
-- 对未来 30 天内的财报日历项标记 `earnings_alert=true`；没有可用 key 时输出 `earnings calendar unavailable because ...`。
-- 使用本地 `data_cache/` 缓存 API 响应，减少重复请求。
-- 单个数据源失败时不会中断整个流程，会在报告和 CLI 输出中记录 warning。
-- 输出：
-  - `reports/YYYY-MM-DD_daily_brief.md`
-  - `reports/YYYY-MM-DD_daily_brief.json`
-  - `reports/YYYY-MM-DD_sources.csv`
+- AI 算力芯片、AI ASIC、AI 网络芯片
+- 半导体制造、设备、检测、先进封装、EUV
+- 存储、HBM、DRAM、NAND、HDD、SSD
+- AI 云基础设施、云厂商 capex、数据中心需求
+- 机器人、Physical AI、工业自动化、医疗机器人、仓储机器人
+
+当前示例 watchlist 暂不包含 A 股。
 
 ## 安装
 
-建议使用 Python 3.11+。
-
 ```powershell
-cd "C:\Users\mingzhe Liu\OneDrive\Desktop\market-intelligence-agent"
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
-python -m pip install -e .
+pip install -r requirements.txt
 ```
 
-如果你只想安装核心依赖，不需要 A 股源，可以改用：
+`requirements.txt` 会以 editable 模式安装当前项目，因此安装后可以直接使用 `python -m market_agent ...`。
 
-```powershell
-python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -e .[dev]
-```
+## .env 配置
 
-## 配置
+复制 `.env.example` 为 `.env`，按需填写：
 
-复制示例文件：
-
-```powershell
-Copy-Item .env.example .env
-Copy-Item watchlist.example.yaml watchlist.yaml
-```
-
-编辑 `.env`，填入你要使用的数据源 key：
-
-```dotenv
+```env
 FMP_API_KEY=
 ALPHA_VANTAGE_API_KEY=
 FINNHUB_API_KEY=
-TUSHARE_TOKEN=
-YFINANCE_ENABLED=true
-LLM_PROVIDER=moonshot
-LLM_BASE_URL=https://api.moonshot.cn/anthropic
-LLM_MODEL=kimi-k2.6
-LLM_API_KEY=
-SEC_USER_AGENT=market-intelligence-agent/0.1 your_email@example.com
-CACHE_TTL_SECONDS=21600
+SEC_USER_AGENT=market-intelligence-agent your_email@example.com
 ```
 
 说明：
 
-- `FMP_API_KEY`：推荐配置，用于美股新闻、行情、财报日历。
-- `ALPHA_VANTAGE_API_KEY` / `FINNHUB_API_KEY`：FMP 没有配置或失败时作为备用。
-- `TUSHARE_TOKEN`：可选，用于 A 股 Tushare 数据。
-- `YFINANCE_ENABLED`：默认 `true`，用于打开 yfinance 美股行情快照；yfinance 不需要 API key。
-- `LLM_MODEL`：默认 `kimi-k2.6`。当前 MVP 不会自动调用 LLM，这组配置留给后续研究摘要扩展使用。
-- `LLM_API_KEY`：如果要启用后续 LLM 功能，可放 Moonshot/Kimi token；不要写进代码。
-- `SEC_USER_AGENT`：SEC EDGAR 建议自动化请求提供明确 User-Agent 和联系邮箱。
-- 所有 API key 都只放在 `.env`，不要写进代码。
-
-## watchlist.yaml 示例
-
-```yaml
-timezone: Asia/Singapore
-keywords:
-  - HBM
-  - DRAM price
-  - NAND price
-  - AI data center
-  - enterprise SSD
-  - memory cycle
-stocks:
-  - ticker: MU
-    name: Micron
-    market: US
-    aliases: [Micron Technology, 美光]
-    themes: [HBM, DRAM, NAND, AI memory]
-  - ticker: WDC
-    name: Western Digital
-    market: US
-    aliases: [Western Digital, 西部数据]
-    themes: [HDD, NAND, AI storage]
-  - ticker: 688008.SH
-    name: 澜起科技
-    market: CN
-    aliases: [Montage Technology, 澜起]
-    themes: [DDR5, CXL, AI server]
-```
+- `SEC_USER_AGENT` 建议填写真实邮箱，SEC EDGAR 需要 User-Agent。
+- API key 只从 `.env` 读取，不要写进代码。
+- 没有 API key 时会尽量使用 yfinance、SEC EDGAR、Google News RSS、IR RSS 等公开 fallback。
 
 ## 运行
 
-校验 watchlist：
+验证 watchlist：
 
 ```powershell
-python -m market_agent validate-watchlist --watchlist watchlist.yaml
+python -m market_agent validate-watchlist --watchlist watchlist.example.yaml
 ```
 
-检查 yfinance 和 LLM 配置：
+生成 daily 报告：
 
 ```powershell
-python -m market_agent show-config --env-file .env
+python -m market_agent run --watchlist watchlist.example.yaml
+python -m market_agent run --watchlist watchlist.example.yaml --scope daily
+python -m market_agent run --watchlist watchlist.example.yaml --date 2026-06-03
 ```
 
-按 watchlist 生成当天报告：
+生成 weekly 或 all 范围报告：
 
 ```powershell
-python -m market_agent run --watchlist watchlist.yaml
+python -m market_agent run --watchlist watchlist.example.yaml --scope weekly
+python -m market_agent run --watchlist watchlist.example.yaml --scope all
+python -m market_agent run --watchlist watchlist.example.yaml --scope daily --max-news-per-ticker 3
 ```
 
-指定日期生成报告：
+默认 `scope=daily`，使用 `daily_core_stocks`。`weekly` 会合并 `daily_core_stocks` 和 `weekly_extended_stocks`。
 
-```powershell
-python -m market_agent run --watchlist watchlist.yaml --date 2026-06-01
-```
+## 数据源说明
 
-如果没有执行 `pip install -e .`，也可以临时设置 `PYTHONPATH`：
+- SEC EDGAR：官方 filings 来源。
+- yfinance：非官方行情数据源，仅用于个人研究上下文。
+- Google News RSS：公开 fallback 聚合源；系统会尽量解析 `canonical_url`，解析失败时保留 `aggregator_url` 并降低 confidence。
+- FMP / Alpha Vantage / Finnhub：配置 API key 后用于增强新闻和财报日历。
+- 公司 IR RSS：可在 watchlist 的 `ir_news_urls` 中配置。
 
-```powershell
-$env:PYTHONPATH="src"
-python -m market_agent run --watchlist watchlist.yaml --date 2026-06-01
-```
+所有请求都带 timeout；单个数据源失败会记录 warning，不应导致整个 pipeline 崩溃。
 
-## 输出 JSON 结构
+## 输出文件
 
-JSON 报告包含这些顶层字段：
+运行后生成：
 
-```json
-{
-  "run_date": "YYYY-MM-DD",
-  "timezone": "Asia/Singapore",
-  "watchlist": [],
-  "market_snapshot": [],
-  "news": [],
-  "filings": [],
-  "earnings_calendar": [],
-  "earnings_transcripts": [],
-  "theme_mentions": [],
-  "alerts": [],
-  "analyst_review_queue": [],
-  "questions_for_analysis": [],
-  "sources": []
-}
-```
+- `reports/YYYY-MM-DD_daily_brief.md`
+- `reports/YYYY-MM-DD_daily_brief.json`
+- `reports/YYYY-MM-DD_sources.csv`
 
-所有采集到的记录都会尽量包含：
+Markdown 报告包含：
 
-- `source_url`
-- `final_url`
-- `aggregator_url`
-- `source_name`
-- `published_at`
-- `fetched_at`
+- Executive Summary
+- Critical Alerts
+- Analyst Triage
+- What Changed Since Last Report
+- Category Summary
+- Watchlist Snapshot Table
+- High Materiality Items
+- Per-Ticker Detail
+- Theme Tracker
+- Missing Data / Weak Claims
+- Questions for ChatGPT Analysis
+- Source Notes
 
-新闻和聚合后的新闻 item 还会尽量包含：
+JSON 中每条 item 包含 `source_url`、`source_name`、`published_at`、`fetched_at`、`freshness`、`content_depth`、`materiality_score`、`score_breakdown`、`related_themes`、`matched_terms` 等字段，便于调试和追溯。
 
-- `freshness`
-- `source_quality`
-- `summary_confidence`
-- `cluster_id`
-- `cluster_size`
-- `cluster_sources`
-- `core_claim`
+## 如何交给 ChatGPT 分析
 
-`thesis_effect` 使用更细的标签：
+把 Markdown、JSON、CSV 一起上传给 ChatGPT，然后让它重点判断：
 
-- `supports_demand_thesis`
-- `supports_pricing_power`
-- `weakens_supply_shortage_thesis`
-- `increases_competition_risk`
-- `valuation_risk`
-- `background_only`
-- `needs_manual_review`
-
-缺失数据不会被编造。Markdown 中缺失项会显示为 `not available`。
+- 哪些信息是真正重要的，哪些只是噪音；
+- 哪些类别今天动量更强；
+- 行情、filings、新闻、主题信号之间是否矛盾；
+- 哪些结论因为数据缺失、过旧、或只有标题而证据较弱；
+- 哪些公司需要回到官方来源继续验证。
 
 ## 测试
 
 ```powershell
-python -m pytest
+pytest
 ```
 
-当前测试覆盖：
+建议在修改后至少运行：
 
-- watchlist 数据模型校验。
-- 新闻记录的溯源字段。
-- 新闻新鲜度、来源质量、旧新闻降级和相似新闻 cluster。
-- Markdown 报告中新闻来源字段和 `not available` 输出。
-- sources.csv 必要列和扩展溯源列。
-
-## 注意事项
-
-- 免费 API key 可能有频率限制或字段限制，失败时程序会记录 warning 并继续跑其他数据源。
-- SEC EDGAR 不需要 API key，但应配置合规的 `SEC_USER_AGENT`。
-- A 股 AKShare/Tushare 字段可能随上游库变化，若失败会在 alerts 中记录原因。
-- 本工具生成的是研究材料，不是投资建议。
+```powershell
+python -m market_agent validate-watchlist --watchlist watchlist.example.yaml
+python -m market_agent run --watchlist watchlist.example.yaml --scope daily
+pytest
+```

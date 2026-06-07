@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -10,24 +10,47 @@ class StrictModel(BaseModel):
 
 
 Materiality = Literal["high", "medium", "low"]
-Freshness = Literal["fresh", "recent", "stale", "background", "unknown"]
+FreshnessLabel = Literal["fresh", "recent", "stale_context", "unknown"]
 SourceQuality = Literal["high", "medium", "low", "unknown"]
+ContentDepth = Literal["headline_only", "article_excerpt", "full_article"]
+CanonicalUrlStatus = Literal["resolved", "unavailable", "failed"]
 ThesisEffect = Literal[
-    "supports_demand_thesis",
-    "supports_pricing_power",
-    "weakens_supply_shortage_thesis",
-    "increases_competition_risk",
-    "valuation_risk",
-    "background_only",
-    "needs_manual_review",
+    "supports_thesis",
+    "weakens_thesis",
+    "neutral",
+    "unknown",
+    "needs_review",
 ]
 Confidence = Literal["high", "medium", "low"]
+WatchlistScope = Literal["daily", "weekly", "all"]
+
+
+class ReportPolicy(StrictModel):
+    max_items_per_ticker: int = 5
+    max_news_per_ticker: int = 3
+    max_critical_alerts_per_day: int = 10
+    max_low_materiality_items: int = 20
+    only_show_fresh_news_days: int = 7
+    stale_news_days: int = 14
+    weekly_extended_watchlist_day: str = "Sunday"
+
+
+class GlobalSettings(StrictModel):
+    enable_public_news_fallback: bool = True
+    enable_google_news_rss: bool = True
+    enable_investor_relations_rss: bool = True
+    enable_sec_edgar: bool = True
+    enable_yfinance: bool = True
+    enable_akshare: bool = False
+    enable_tushare_if_token_available: bool = False
+    no_buy_sell_recommendations: bool = True
 
 
 class StockItem(StrictModel):
     ticker: str
     name: str
-    market: Literal["US", "CN"]
+    market: str
+    category: str = "Uncategorized"
     aliases: list[str] = Field(default_factory=list)
     themes: list[str] = Field(default_factory=list)
     ir_news_urls: list[str] = Field(default_factory=list)
@@ -48,14 +71,71 @@ class StockItem(StrictModel):
 
 class Watchlist(StrictModel):
     timezone: str = "Asia/Singapore"
+    report_policy: ReportPolicy = Field(default_factory=ReportPolicy)
+    global_settings: GlobalSettings = Field(default_factory=GlobalSettings)
     keywords: list[str] = Field(default_factory=list)
-    stocks: list[StockItem] = Field(min_length=1)
+    stocks: list[StockItem] = Field(default_factory=list)
+    daily_core_stocks: list[StockItem] = Field(default_factory=list)
+    weekly_extended_stocks: list[StockItem] = Field(default_factory=list)
+    china_weekly_stocks: list[StockItem] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_some_stocks(self) -> "Watchlist":
+        if not any(
+            [
+                self.stocks,
+                self.daily_core_stocks,
+                self.weekly_extended_stocks,
+                self.china_weekly_stocks,
+            ]
+        ):
+            raise ValueError("watchlist must define stocks or scoped stock lists")
+        return self
+
+
+class SummaryFields(StrictModel):
+    what_happened: str = "not available"
+    affected_company: str = "not available"
+    related_theme: str = "not available"
+    possible_financial_impact: str = "not available"
+    evidence_strength: Confidence = "low"
+    follow_up_needed: str = "not available"
+
+    @classmethod
+    def from_text(
+        cls,
+        text: object,
+        *,
+        affected_company: object = None,
+        related_theme: object = None,
+        evidence_strength: Confidence = "low",
+        follow_up_needed: object = None,
+    ) -> "SummaryFields":
+        cleaned = str(text or "").strip() or "not available"
+        return cls(
+            what_happened=cleaned,
+            affected_company=str(affected_company or "not available"),
+            related_theme=str(related_theme or "not available"),
+            possible_financial_impact="not available",
+            evidence_strength=evidence_strength,
+            follow_up_needed=str(follow_up_needed or "Verify with primary source or full article."),
+        )
+
+
+class FreshnessInfo(StrictModel):
+    published_days_ago: int | None = None
+    is_newly_published: bool = False
+    is_newly_discovered: bool = False
+    freshness_label: FreshnessLabel = "unknown"
 
 
 class SourceFields(StrictModel):
     source_name: str
     source_url: str
     final_url: str | None = None
+    canonical_url: str | None = None
+    canonical_url_status: CanonicalUrlStatus = "unavailable"
+    aggregator_source: str | None = None
     aggregator_url: str | None = None
     published_at: str | None = None
     fetched_at: str
@@ -66,16 +146,18 @@ class NewsClusterSource(StrictModel):
     publisher: str | None = None
     source_url: str
     final_url: str | None = None
+    canonical_url: str | None = None
+    aggregator_source: str | None = None
     aggregator_url: str | None = None
     source_quality: SourceQuality = "unknown"
-    freshness: Freshness = "unknown"
+    freshness: FreshnessInfo = Field(default_factory=FreshnessInfo)
     published_at: str | None = None
 
 
 class MarketSnapshot(SourceFields):
     ticker: str
     name: str | None = None
-    market: Literal["US", "CN"] | None = None
+    market: str | None = None
     price: float | None = None
     currency: str | None = None
     change_percent: float | None = None
@@ -127,16 +209,22 @@ class MarketSnapshot(SourceFields):
 
 class NewsItem(SourceFields):
     ticker: str
-    item_type: str = "news"
+    company_name: str = "not available"
+    category: str = "Uncategorized"
+    item_type: str = "public_news"
     title: str
-    summary: str | None = None
+    summary: SummaryFields = Field(default_factory=SummaryFields)
     summary_confidence: Confidence = "low"
     why_it_matters: str = "not available"
     related_themes: list[str] = Field(default_factory=list)
+    matched_terms: list[str] = Field(default_factory=list)
     materiality: Materiality = "low"
-    thesis_effect: ThesisEffect = "needs_manual_review"
+    materiality_score: int = 0
+    score_breakdown: dict[str, int] = Field(default_factory=dict)
+    thesis_effect: ThesisEffect = "needs_review"
     confidence: Confidence = "medium"
-    freshness: Freshness = "unknown"
+    freshness: FreshnessInfo = Field(default_factory=FreshnessInfo)
+    content_depth: ContentDepth = "headline_only"
     source_quality: SourceQuality = "unknown"
     publisher: str | None = None
     symbols: list[str] = Field(default_factory=list)
@@ -145,6 +233,16 @@ class NewsItem(SourceFields):
     cluster_size: int = 1
     cluster_sources: list[NewsClusterSource] = Field(default_factory=list)
     core_claim: str | None = None
+    is_duplicate: bool = False
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def coerce_summary(cls, value: object) -> SummaryFields:
+        if isinstance(value, SummaryFields):
+            return value
+        if isinstance(value, dict):
+            return SummaryFields.model_validate(value)
+        return SummaryFields.from_text(value)
 
     @field_validator("thesis_effect", mode="before")
     @classmethod
@@ -154,16 +252,34 @@ class NewsItem(SourceFields):
 
 class FilingItem(SourceFields):
     ticker: str
+    company_name: str = "not available"
+    category: str = "Uncategorized"
     form: str
     title: str | None = None
-    summary: str | None = None
+    summary: SummaryFields = Field(default_factory=SummaryFields)
     materiality: Materiality = "low"
+    materiality_score: int = 0
+    score_breakdown: dict[str, int] = Field(default_factory=dict)
     why_it_matters: str = "not available"
-    thesis_effect: ThesisEffect = "needs_manual_review"
+    thesis_effect: ThesisEffect = "needs_review"
     confidence: Confidence = "medium"
+    freshness: FreshnessInfo = Field(default_factory=FreshnessInfo)
+    content_depth: ContentDepth = "article_excerpt"
+    source_quality: SourceQuality = "high"
+    related_themes: list[str] = Field(default_factory=list)
+    matched_terms: list[str] = Field(default_factory=list)
     filing_date: str | None = None
     accession_number: str | None = None
     description: str | None = None
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def coerce_summary(cls, value: object) -> SummaryFields:
+        if isinstance(value, SummaryFields):
+            return value
+        if isinstance(value, dict):
+            return SummaryFields.model_validate(value)
+        return SummaryFields.from_text(value, evidence_strength="high")
 
     @field_validator("thesis_effect", mode="before")
     @classmethod
@@ -196,6 +312,8 @@ class ThemeMention(SourceFields):
     item_type: str
     title: str
     snippet: str | None = None
+    matched_terms: list[str] = Field(default_factory=list)
+    freshness: FreshnessInfo = Field(default_factory=FreshnessInfo)
 
 
 class AlertItem(SourceFields):
@@ -206,26 +324,72 @@ class AlertItem(SourceFields):
 
 class IntelligenceItem(SourceFields):
     ticker: str
+    company_name: str = "not available"
+    category: str = "Uncategorized"
     item_type: str
     title: str
-    summary: str
+    summary: SummaryFields = Field(default_factory=SummaryFields)
     summary_confidence: Confidence = "medium"
     why_it_matters: str
     related_themes: list[str] = Field(default_factory=list)
+    matched_terms: list[str] = Field(default_factory=list)
     materiality: Materiality
+    materiality_score: int = 0
+    score_breakdown: dict[str, int] = Field(default_factory=dict)
     thesis_effect: ThesisEffect
     confidence: Confidence
-    freshness: Freshness = "unknown"
+    freshness: FreshnessInfo = Field(default_factory=FreshnessInfo)
+    content_depth: ContentDepth = "article_excerpt"
     source_quality: SourceQuality = "unknown"
     cluster_id: str | None = None
     cluster_size: int = 1
     cluster_sources: list[NewsClusterSource] = Field(default_factory=list)
     core_claim: str | None = None
+    is_duplicate: bool = False
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def coerce_summary(cls, value: object) -> SummaryFields:
+        if isinstance(value, SummaryFields):
+            return value
+        if isinstance(value, dict):
+            return SummaryFields.model_validate(value)
+        return SummaryFields.from_text(value)
 
     @field_validator("thesis_effect", mode="before")
     @classmethod
     def normalize_item_thesis_effect(cls, value: object) -> str:
         return _normalize_thesis_effect(value)
+
+
+class NewsCluster(StrictModel):
+    cluster_id: str
+    primary_title: str
+    tickers: list[str] = Field(default_factory=list)
+    related_themes: list[str] = Field(default_factory=list)
+    source_count: int = 0
+    best_source: str = "not available"
+    newest_published_at: str | None = None
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AnalystTriageItem(StrictModel):
+    ticker: str
+    title: str
+    reason: str
+    follow_up_needed: str
+    materiality: Materiality
+    materiality_score: int
+    freshness_label: FreshnessLabel
+    evidence_strength: Confidence
+    source_url: str
+
+
+class AnalystTriage(StrictModel):
+    must_review_today: list[AnalystTriageItem] = Field(default_factory=list)
+    watch_items: list[AnalystTriageItem] = Field(default_factory=list)
+    background_context: list[AnalystTriageItem] = Field(default_factory=list)
+    noise_duplicate_low_confidence: list[AnalystTriageItem] = Field(default_factory=list)
 
 
 class AnalystReviewQueueItem(StrictModel):
@@ -238,8 +402,17 @@ class AnalystReviewQueueItem(StrictModel):
     item_type: str
     materiality: Materiality
     source_quality: SourceQuality = "unknown"
-    freshness: Freshness = "unknown"
+    freshness: FreshnessInfo = Field(default_factory=FreshnessInfo)
     source_url: str
+
+
+class CategorySummary(StrictModel):
+    category: str
+    key_movers: list[str] = Field(default_factory=list)
+    important_news: list[str] = Field(default_factory=list)
+    demand_signal: str = "not available"
+    risk_signal: str = "not available"
+    evidence_strength: Confidence = "low"
 
 
 class PriceChange(StrictModel):
@@ -262,7 +435,11 @@ class ReportChanges(StrictModel):
     previous_report_path: str | None = None
     new_filings: list[IntelligenceItem] = Field(default_factory=list)
     new_news: list[IntelligenceItem] = Field(default_factory=list)
+    newly_published: list[IntelligenceItem] = Field(default_factory=list)
+    newly_discovered_stale: list[IntelligenceItem] = Field(default_factory=list)
+    unchanged: list[str] = Field(default_factory=list)
     new_theme_mentions: list[str] = Field(default_factory=list)
+    removed_or_no_longer_active_alerts: list[str] = Field(default_factory=list)
     price_changes: list[PriceChange] = Field(default_factory=list)
 
 
@@ -273,10 +450,14 @@ class SourceRecord(StrictModel):
     source_name: str
     source_url: str
     final_url: str | None = None
+    canonical_url: str | None = None
+    canonical_url_status: CanonicalUrlStatus = "unavailable"
+    aggregator_source: str | None = None
     aggregator_url: str | None = None
     source_quality: SourceQuality = "unknown"
-    freshness: Freshness = "unknown"
+    freshness: FreshnessInfo = Field(default_factory=FreshnessInfo)
     cluster_id: str | None = None
+    content_depth: ContentDepth | None = None
     published_at: str | None = None
     fetched_at: str
 
@@ -284,16 +465,21 @@ class SourceRecord(StrictModel):
 class ReportData(StrictModel):
     run_date: str
     timezone: str
+    scope: WatchlistScope = "daily"
     watchlist: list[StockItem] = Field(default_factory=list)
     market_snapshot: list[MarketSnapshot] = Field(default_factory=list)
     news: list[NewsItem] = Field(default_factory=list)
+    items: list[IntelligenceItem] = Field(default_factory=list)
+    news_clusters: list[NewsCluster] = Field(default_factory=list)
     filings: list[FilingItem] = Field(default_factory=list)
     earnings_calendar: list[EarningsCalendarItem] = Field(default_factory=list)
     earnings_transcripts: list[EarningsTranscriptItem] = Field(default_factory=list)
     theme_mentions: list[ThemeMention] = Field(default_factory=list)
+    category_summary: list[CategorySummary] = Field(default_factory=list)
+    analyst_triage: AnalystTriage = Field(default_factory=AnalystTriage)
     alerts: list[AlertItem] = Field(default_factory=list)
+    missing_data: list[str] = Field(default_factory=list)
     changes_since_last_report: ReportChanges = Field(default_factory=ReportChanges)
-    items: list[IntelligenceItem] = Field(default_factory=list)
     analyst_review_queue: list[AnalystReviewQueueItem] = Field(default_factory=list)
     questions_for_analysis: list[str] = Field(default_factory=list)
     sources: list[SourceRecord] = Field(default_factory=list)
@@ -323,22 +509,21 @@ def _json_safe_value(value: object) -> Any:
 
 def _normalize_thesis_effect(value: object) -> str:
     text = str(value or "").strip()
-    if text in {
-        "supports_demand_thesis",
-        "supports_pricing_power",
-        "weakens_supply_shortage_thesis",
-        "increases_competition_risk",
-        "valuation_risk",
-        "background_only",
-        "needs_manual_review",
-    }:
+    if text in {"supports_thesis", "weakens_thesis", "neutral", "unknown", "needs_review"}:
         return text
     legacy_map = {
-        "positive": "supports_demand_thesis",
-        "negative": "needs_manual_review",
-        "mixed": "needs_manual_review",
-        "neutral": "background_only",
-        "unknown": "needs_manual_review",
-        "": "needs_manual_review",
+        "supports_demand_thesis": "supports_thesis",
+        "supports_pricing_power": "supports_thesis",
+        "weakens_supply_shortage_thesis": "weakens_thesis",
+        "increases_competition_risk": "weakens_thesis",
+        "valuation_risk": "needs_review",
+        "background_only": "neutral",
+        "needs_manual_review": "needs_review",
+        "positive": "supports_thesis",
+        "negative": "weakens_thesis",
+        "mixed": "needs_review",
+        "neutral": "neutral",
+        "unknown": "unknown",
+        "": "needs_review",
     }
-    return legacy_map.get(text.casefold(), "needs_manual_review")
+    return legacy_map.get(text.casefold(), "needs_review")

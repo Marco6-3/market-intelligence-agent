@@ -75,6 +75,7 @@ class AkshareCNClient:
                 title = truncate(_first_present(row, ["公告标题", "标题", "公告名称", "title"]), 280)
                 if not title:
                     continue
+                source_url = _first_url(row) or "not available"
                 published_at = coerce_datetime_string(
                     _first_present(row, ["公告时间", "公告日期", "日期", "time", "date"])
                 )
@@ -85,18 +86,21 @@ class AkshareCNClient:
                         title=title,
                         summary=f"title_summary: {title}",
                         summary_confidence="low",
+                        content_depth="headline_only",
                         why_it_matters=(
                             "A-share company announcement or financial-report title from AKShare; "
                             "read the source document before using it as a thesis claim."
                         ),
                         materiality=_classify_cn_announcement_title(title),
-                        thesis_effect="needs_manual_review",
+                        thesis_effect="needs_review",
                         confidence="medium",
                         publisher=stock.name,
                         symbols=[stock.ticker, code],
                         source_name=AKSHARE_ANNOUNCEMENT_SOURCE,
-                        source_url=_first_url(row) or "not available",
-                        final_url=_first_url(row) or "not available",
+                        source_url=source_url,
+                        final_url=source_url,
+                        canonical_url=source_url if source_url != "not available" else None,
+                        canonical_url_status="resolved" if source_url != "not available" else "unavailable",
                         published_at=published_at,
                         fetched_at=fetched_at,
                     )

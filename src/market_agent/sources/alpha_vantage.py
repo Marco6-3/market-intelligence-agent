@@ -40,17 +40,21 @@ class AlphaVantageClient:
             if not title:
                 continue
             summary = truncate(row.get("summary"), 700)
+            source_url = str(row.get("url") or ALPHA_URL)
             items.append(
                 NewsItem(
                     ticker=ticker,
                     title=title,
                     summary=summary or f"title_summary: {title}",
                     summary_confidence="medium" if summary else "low",
+                    content_depth="article_excerpt" if summary else "headline_only",
                     publisher=truncate(row.get("source"), 120),
                     symbols=[ticker],
                     source_name=ALPHA_SOURCE,
-                    source_url=str(row.get("url") or ALPHA_URL),
-                    final_url=str(row.get("url") or ALPHA_URL),
+                    source_url=source_url,
+                    final_url=source_url,
+                    canonical_url=source_url,
+                    canonical_url_status="resolved",
                     published_at=coerce_datetime_string(row.get("time_published")),
                     fetched_at=fetched_at,
                 )

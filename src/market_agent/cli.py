@@ -6,7 +6,7 @@ from typing import Optional
 import typer
 
 from .config import AppConfig
-from .pipeline import load_watchlist, run_daily_brief
+from .pipeline import load_watchlist, run_daily_brief, select_watchlist_stocks
 
 app = typer.Typer(
     help=(
@@ -29,9 +29,12 @@ def validate_watchlist_command(
     )
 ) -> None:
     parsed = load_watchlist(watchlist)
+    daily_count = len(select_watchlist_stocks(parsed, "daily"))
+    weekly_count = len(select_watchlist_stocks(parsed, "weekly"))
+    all_count = len(select_watchlist_stocks(parsed, "all"))
     typer.echo(
-        f"Watchlist valid: {len(parsed.stocks)} stocks, "
-        f"{len(parsed.keywords)} keywords, timezone={parsed.timezone}"
+        f"Watchlist valid: daily={daily_count}, weekly={weekly_count}, all={all_count}, "
+        f"keywords={len(parsed.keywords)}, timezone={parsed.timezone}"
     )
 
 
@@ -51,6 +54,17 @@ def run_command(
         "--date",
         help="Report date in YYYY-MM-DD format. Defaults to today in watchlist timezone.",
     ),
+    scope: str = typer.Option(
+        "daily",
+        "--scope",
+        help="Watchlist scope: daily, weekly, or all.",
+    ),
+    max_news_per_ticker: Optional[int] = typer.Option(
+        None,
+        "--max-news-per-ticker",
+        min=1,
+        help="Override report_policy.max_news_per_ticker for this run.",
+    ),
     output_dir: Path = typer.Option(
         Path("reports"),
         "--output-dir",
@@ -65,6 +79,8 @@ def run_command(
     result = run_daily_brief(
         watchlist_path=watchlist,
         run_date=run_date,
+        scope=_normalize_scope(scope),
+        max_news_per_ticker=max_news_per_ticker,
         output_dir=output_dir,
         cache_dir=cache_dir,
     )
@@ -96,3 +112,10 @@ def show_config_command(
 
 def main() -> None:
     app()
+
+
+def _normalize_scope(value: str) -> str:
+    cleaned = value.strip().lower()
+    if cleaned not in {"daily", "weekly", "all"}:
+        raise typer.BadParameter("scope must be one of: daily, weekly, all")
+    return cleaned

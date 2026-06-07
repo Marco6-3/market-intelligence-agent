@@ -11,16 +11,21 @@ import yaml
 from .cache import FileCache
 from .config import AppConfig
 from .intelligence import (
+    build_analyst_triage,
+    build_category_summary,
     build_analyst_review_queue,
-    cluster_news_items,
     earnings_calendar_to_item,
+    enrich_filing_item,
     enrich_news_item,
     filing_to_item,
     market_snapshot_to_item,
     news_to_item,
     related_themes_for_text,
+    related_themes_and_matched_terms,
     theme_terms_for_stock,
 )
+from .deduplication import deduplicate_and_cluster_news
+from .freshness import classify_freshness, freshness_label
 from .models import (
     AlertItem,
     EarningsCalendarItem,
@@ -36,6 +41,7 @@ from .models import (
     StockItem,
     ThemeMention,
     Watchlist,
+    WatchlistScope,
 )
 from .renderers.csv_sources import write_sources_csv
 from .renderers.json_export import write_json_report
@@ -68,9 +74,33 @@ def load_watchlist(path: Path) -> Watchlist:
     return Watchlist.model_validate(data)
 
 
+def select_watchlist_stocks(watchlist: Watchlist, scope: WatchlistScope = "daily") -> list[StockItem]:
+    if watchlist.daily_core_stocks or watchlist.weekly_extended_stocks:
+        if scope == "daily":
+            return list(watchlist.daily_core_stocks)
+        if scope == "weekly":
+            return _unique_stocks([*watchlist.daily_core_stocks, *watchlist.weekly_extended_stocks])
+        return _unique_stocks([*watchlist.daily_core_stocks, *watchlist.weekly_extended_stocks])
+    return list(watchlist.stocks)
+
+
+def _unique_stocks(stocks: Iterable[StockItem]) -> list[StockItem]:
+    seen: set[str] = set()
+    result: list[StockItem] = []
+    for stock in stocks:
+        key = stock.ticker.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(stock)
+    return result
+
+
 def run_daily_brief(
     watchlist_path: Path,
     run_date: str | None = None,
+    scope: WatchlistScope = "daily",
+    max_news_per_ticker: int | None = None,
     output_dir: Path = Path("reports"),
     cache_dir: Path = Path("data_cache"),
 ) -> PipelineResult:
@@ -80,6 +110,7 @@ def run_daily_brief(
     cache_dir = cache_dir if cache_dir.is_absolute() else base_dir / cache_dir
 
     watchlist = load_watchlist(watchlist_path)
+    selected_stocks = select_watchlist_stocks(watchlist, scope)
     report_date = parse_run_date(run_date, watchlist.timezone)
     config = AppConfig.from_env(base_dir / ".env")
     cache = FileCache(cache_dir, ttl_seconds=config.cache_ttl_seconds)
@@ -105,15 +136,16 @@ def run_daily_brief(
     tushare_client = TushareCNClient(config.tushare_token) if config.tushare_token else None
     public_news_client = PublicNewsClient(cache)
 
-    news_start = report_date - timedelta(days=7)
+    news_limit = max_news_per_ticker or watchlist.report_policy.max_news_per_ticker
+    news_start = report_date - timedelta(days=watchlist.report_policy.only_show_fresh_news_days)
     calendar_end = report_date + timedelta(days=30)
 
-    for stock in watchlist.stocks:
-        if stock.market == "US":
+    for stock in selected_stocks:
+        if stock.market != "CN":
             stock_news: list[NewsItem] = []
             stock_earnings: list[EarningsCalendarItem] = []
 
-            if yfinance_client:
+            if yfinance_client and watchlist.global_settings.enable_yfinance:
                 market_snapshot.extend(
                     _safe_collect(
                         lambda: yfinance_client.fetch_quote(stock),
@@ -132,10 +164,10 @@ def run_daily_brief(
                     warnings,
                 )
 
-            if fmp_client:
+            if stock.market == "US" and fmp_client:
                 stock_news.extend(
                     _safe_collect(
-                        lambda: fmp_client.fetch_stock_news(stock.ticker),
+                        lambda: fmp_client.fetch_stock_news(stock.ticker, limit=news_limit),
                         "FMP news",
                         stock.ticker,
                         alerts,
@@ -151,11 +183,11 @@ def run_daily_brief(
                     warnings,
                 )
 
-            if not stock_news:
+            if stock.market == "US" and not stock_news:
                 if alpha_client:
                     stock_news.extend(
                         _safe_collect(
-                            lambda: alpha_client.fetch_news(stock.ticker),
+                            lambda: alpha_client.fetch_news(stock.ticker, limit=news_limit),
                             "Alpha Vantage news",
                             stock.ticker,
                             alerts,
@@ -184,28 +216,35 @@ def run_daily_brief(
                     )
 
             if not stock_news:
+                if (
+                    watchlist.global_settings.enable_public_news_fallback
+                    and watchlist.global_settings.enable_google_news_rss
+                ):
+                    stock_news.extend(
+                        _safe_collect(
+                            lambda: public_news_client.fetch_company_news(
+                                stock,
+                                theme_terms_for_stock(stock, watchlist.keywords),
+                                limit=news_limit,
+                            ),
+                            "public Google News RSS",
+                            stock.ticker,
+                            alerts,
+                            warnings,
+                        )
+                    )
+            if watchlist.global_settings.enable_investor_relations_rss:
                 stock_news.extend(
                     _safe_collect(
-                        lambda: public_news_client.fetch_company_news(
-                            stock, theme_terms_for_stock(stock, watchlist.keywords)
-                        ),
-                        "public Google News RSS",
+                        lambda: public_news_client.fetch_ir_news(stock, limit=news_limit),
+                        "Investor Relations RSS",
                         stock.ticker,
                         alerts,
                         warnings,
                     )
                 )
-            stock_news.extend(
-                _safe_collect(
-                    lambda: public_news_client.fetch_ir_news(stock),
-                    "Investor Relations RSS",
-                    stock.ticker,
-                    alerts,
-                    warnings,
-                )
-            )
 
-            if not stock_earnings:
+            if stock.market == "US" and not stock_earnings:
                 if alpha_client:
                     stock_earnings.extend(
                         _safe_collect(
@@ -256,36 +295,38 @@ def run_daily_brief(
             _mark_earnings_alerts(stock_earnings, report_date, alerts)
             news.extend(stock_news)
             earnings_calendar.extend(stock_earnings)
-            filings.extend(
-                _safe_collect(
-                    lambda: sec_client.fetch_recent_filings(stock.ticker),
-                    "SEC EDGAR filings",
-                    stock.ticker,
-                    alerts,
-                    warnings,
+            if stock.market == "US" and watchlist.global_settings.enable_sec_edgar:
+                filings.extend(
+                    _safe_collect(
+                        lambda: sec_client.fetch_recent_filings(stock.ticker, limit=3),
+                        "SEC EDGAR filings",
+                        stock.ticker,
+                        alerts,
+                        warnings,
+                    )
                 )
-            )
 
         elif stock.market == "CN":
-            market_snapshot.extend(
-                _safe_collect(
-                    lambda: akshare_client.fetch_snapshot(stock),
-                    "AKShare CN snapshot",
-                    stock.ticker,
-                    alerts,
-                    warnings,
+            if watchlist.global_settings.enable_akshare:
+                market_snapshot.extend(
+                    _safe_collect(
+                        lambda: akshare_client.fetch_snapshot(stock),
+                        "AKShare CN snapshot",
+                        stock.ticker,
+                        alerts,
+                        warnings,
+                    )
                 )
-            )
-            news.extend(
-                _safe_collect(
-                    lambda: akshare_client.fetch_announcements(stock),
-                    "AKShare CN announcements",
-                    stock.ticker,
-                    alerts,
-                    warnings,
+                news.extend(
+                    _safe_collect(
+                        lambda: akshare_client.fetch_announcements(stock, limit=news_limit),
+                        "AKShare CN announcements",
+                        stock.ticker,
+                        alerts,
+                        warnings,
+                    )
                 )
-            )
-            if tushare_client:
+            if tushare_client and watchlist.global_settings.enable_tushare_if_token_available:
                 market_snapshot.extend(
                     _safe_collect(
                         lambda: tushare_client.fetch_recent_daily(stock, report_date),
@@ -304,16 +345,19 @@ def run_daily_brief(
                     warnings,
                 )
 
-    news = _enrich_news_items(news, watchlist.stocks, watchlist.keywords, report_date)
-    theme_mentions = _build_theme_mentions(watchlist.stocks, watchlist.keywords, news, filings)
-    questions = _build_questions(watchlist.stocks, watchlist.keywords)
+    news, news_clusters = _enrich_news_items(news, selected_stocks, watchlist.keywords, report_date)
+    filings = _enrich_filing_items(filings, selected_stocks, watchlist.keywords, report_date)
+    theme_mentions = _build_theme_mentions(selected_stocks, watchlist.keywords, news, filings, report_date)
+    questions = _build_questions(selected_stocks, watchlist.keywords)
 
     report = ReportData(
         run_date=report_date.isoformat(),
         timezone=watchlist.timezone,
-        watchlist=watchlist.stocks,
+        scope=scope,
+        watchlist=selected_stocks,
         market_snapshot=market_snapshot,
         news=news,
+        news_clusters=news_clusters,
         filings=filings,
         earnings_calendar=earnings_calendar,
         earnings_transcripts=[],
@@ -323,7 +367,10 @@ def run_daily_brief(
         sources=[],
     )
     report.items = _build_intelligence_items(report)
+    report.category_summary = build_category_summary(report.watchlist, report.items)
+    report.analyst_triage = build_analyst_triage(report.items)
     report.analyst_review_queue = build_analyst_review_queue(report.items)
+    report.missing_data = _build_missing_data(report)
     report.changes_since_last_report = _build_changes_since_last_report(report, output_dir)
     report.sources = _build_source_records(report)
 
@@ -462,7 +509,7 @@ def _enrich_news_items(
     stocks: Iterable[StockItem],
     global_keywords: list[str],
     report_date: date,
-) -> list[NewsItem]:
+) -> tuple[list[NewsItem], list]:
     stocks_by_ticker = {stock.ticker: stock for stock in stocks}
     enriched: list[NewsItem] = []
     for item in news:
@@ -471,7 +518,24 @@ def _enrich_news_items(
             enriched.append(enrich_news_item(item, stock, global_keywords, report_date))
         else:
             enriched.append(item)
-    return cluster_news_items(_dedupe_news_items(enriched))
+    return deduplicate_and_cluster_news(_dedupe_news_items(enriched))
+
+
+def _enrich_filing_items(
+    filings: list[FilingItem],
+    stocks: Iterable[StockItem],
+    global_keywords: list[str],
+    report_date: date,
+) -> list[FilingItem]:
+    stocks_by_ticker = {stock.ticker: stock for stock in stocks}
+    enriched: list[FilingItem] = []
+    for item in filings:
+        stock = stocks_by_ticker.get(item.ticker)
+        if stock:
+            enriched.append(enrich_filing_item(item, stock, global_keywords, report_date))
+        else:
+            enriched.append(item)
+    return enriched
 
 
 def _dedupe_news_items(news: list[NewsItem]) -> list[NewsItem]:
@@ -491,6 +555,7 @@ def _build_theme_mentions(
     global_keywords: list[str],
     news: list[NewsItem],
     filings: list[FilingItem],
+    report_date: date,
 ) -> list[ThemeMention]:
     mentions: list[ThemeMention] = []
     stocks_by_ticker = {stock.ticker: stock for stock in stocks}
@@ -498,21 +563,31 @@ def _build_theme_mentions(
         stock = stocks_by_ticker.get(item.ticker)
         if not stock:
             continue
-        matched_terms = item.related_themes or related_themes_for_text(
-            item.title,
-            item.summary,
-            theme_terms_for_stock(stock, global_keywords),
-        )
-        for term_clean in matched_terms:
+        themes = item.related_themes
+        terms = item.matched_terms
+        if not themes:
+            themes, terms = related_themes_and_matched_terms(
+                item.title,
+                item.summary,
+                theme_terms_for_stock(stock, global_keywords),
+            )
+        for theme in themes:
             mentions.append(
                 ThemeMention(
                     ticker=item.ticker,
-                    theme=term_clean,
+                    theme=theme,
                     item_type="news",
                     title=item.title,
-                    snippet=truncate(item.summary, 240),
+                    snippet=truncate(_summary_text(item.summary), 240),
+                    matched_terms=terms,
+                    freshness=item.freshness,
                     source_name=item.source_name,
                     source_url=item.source_url,
+                    final_url=item.final_url,
+                    canonical_url=item.canonical_url,
+                    canonical_url_status=item.canonical_url_status,
+                    aggregator_source=item.aggregator_source,
+                    aggregator_url=item.aggregator_url,
                     published_at=item.published_at,
                     fetched_at=item.fetched_at,
                 )
@@ -521,21 +596,28 @@ def _build_theme_mentions(
         stock = stocks_by_ticker.get(item.ticker)
         if not stock:
             continue
-        matched_terms = related_themes_for_text(
+        themes, terms = related_themes_and_matched_terms(
             item.title or item.form,
-            f"{item.summary or ''} {item.description or ''}",
+            f"{_summary_text(item.summary)} {item.description or ''}",
             theme_terms_for_stock(stock, global_keywords),
         )
-        for term_clean in matched_terms:
+        for theme in themes:
             mentions.append(
                 ThemeMention(
                     ticker=item.ticker,
-                    theme=term_clean,
+                    theme=theme,
                     item_type="sec_filing",
                     title=item.title or item.form,
-                    snippet=truncate(item.summary or item.description, 240),
+                    snippet=truncate(_summary_text(item.summary) or item.description, 240),
+                    matched_terms=terms,
+                    freshness=item.freshness,
                     source_name=item.source_name,
                     source_url=item.source_url,
+                    final_url=item.final_url,
+                    canonical_url=item.canonical_url,
+                    canonical_url_status=item.canonical_url_status,
+                    aggregator_source=item.aggregator_source,
+                    aggregator_url=item.aggregator_url,
                     published_at=item.published_at,
                     fetched_at=item.fetched_at,
                 )
@@ -545,10 +627,17 @@ def _build_theme_mentions(
 
 def _build_intelligence_items(report: ReportData) -> list[IntelligenceItem]:
     items: list[IntelligenceItem] = []
-    items.extend(market_snapshot_to_item(snapshot) for snapshot in report.market_snapshot)
+    stocks_by_ticker = {stock.ticker: stock for stock in report.watchlist}
+    items.extend(
+        market_snapshot_to_item(snapshot, stocks_by_ticker.get(snapshot.ticker))
+        for snapshot in report.market_snapshot
+    )
     items.extend(news_to_item(item) for item in report.news)
     items.extend(filing_to_item(item) for item in report.filings)
-    items.extend(earnings_calendar_to_item(item) for item in report.earnings_calendar)
+    items.extend(
+        earnings_calendar_to_item(item, stocks_by_ticker.get(item.ticker))
+        for item in report.earnings_calendar
+    )
     return sorted(items, key=_item_sort_key)
 
 
@@ -579,18 +668,40 @@ def _build_changes_since_last_report(report: ReportData, output_dir: Path) -> Re
         if _filing_key(item) not in previous_filing_keys
     ]
     new_news = [news_to_item(item) for item in report.news if _news_key(item) not in previous_news_keys]
+    newly_published = [
+        item
+        for item in new_news
+        if item.freshness.is_newly_published
+        and freshness_label(item.freshness) in {"fresh", "recent"}
+    ]
+    newly_discovered_stale = [
+        item
+        for item in new_news
+        if freshness_label(item.freshness) == "stale_context"
+    ]
+    unchanged = [
+        f"{item.ticker}: {item.title}"
+        for item in report.items
+        if item.item_type != "market_snapshot" and _generic_item_key(item) in {_generic_item_key(prev) for prev in previous.items}
+    ][:30]
     new_theme_mentions = [
         f"{item.ticker}: {item.theme} - {item.title}"
         for item in report.theme_mentions
         if _theme_key(item) not in previous_theme_keys
     ]
+    previous_alert_titles = {item.title for item in previous.items if item.materiality == "high"}
+    current_alert_titles = {item.title for item in report.items if item.materiality == "high"}
 
     return ReportChanges(
         status=f"Compared with previous report {previous.run_date}",
         previous_report_path=str(previous_path),
         new_filings=new_filings,
         new_news=new_news,
+        newly_published=newly_published,
+        newly_discovered_stale=newly_discovered_stale,
+        unchanged=unchanged,
         new_theme_mentions=new_theme_mentions,
+        removed_or_no_longer_active_alerts=sorted(previous_alert_titles - current_alert_titles)[:20],
         price_changes=_build_price_changes(previous, report),
     )
 
@@ -678,6 +789,33 @@ def _theme_key(item: ThemeMention) -> tuple[str, str, str, str]:
     )
 
 
+def _generic_item_key(item: IntelligenceItem) -> tuple[str, str, str]:
+    return (item.ticker.upper(), item.item_type, item.source_url or item.title)
+
+
+def _build_missing_data(report: ReportData) -> list[str]:
+    missing: list[str] = []
+    for stock in report.watchlist:
+        if not any(item.ticker == stock.ticker for item in report.market_snapshot):
+            missing.append(f"{stock.ticker}: market snapshot not available")
+        if not any(item.ticker == stock.ticker for item in report.news):
+            missing.append(f"{stock.ticker}: news / announcements not available")
+        if stock.market == "US" and not any(item.ticker == stock.ticker for item in report.filings):
+            missing.append(f"{stock.ticker}: SEC filings not available")
+    for item in report.items:
+        if item.content_depth == "headline_only" and item.materiality in {"high", "medium"}:
+            missing.append(f"{item.ticker}: {item.title} is {item.content_depth} but materiality={item.materiality}")
+        if item.confidence == "low" and item.materiality in {"high", "medium"}:
+            missing.append(f"{item.ticker}: {item.title} has low confidence")
+        if item.source_url == "not available":
+            missing.append(f"{item.ticker}: {item.title} source_url not available")
+        if item.aggregator_url and not item.canonical_url:
+            missing.append(f"{item.ticker}: {item.title} has Google RSS aggregator link only")
+    for alert in report.alerts:
+        missing.append(f"warning: {alert.message}")
+    return missing
+
+
 def _build_questions(stocks: Iterable[StockItem], keywords: list[str]) -> list[str]:
     stocks_list = list(stocks)
     tickers = ", ".join(stock.ticker for stock in stocks_list)
@@ -692,10 +830,11 @@ def _build_questions(stocks: Iterable[StockItem], keywords: list[str]) -> list[s
             all_terms.append(term)
     theme_text = ", ".join(all_terms[:16]) if all_terms else "the configured stock themes"
     return [
-        f"Which collected items are most material for {tickers}, and why?",
-        f"Do the filings, earnings calendar items, and news create any contradictions or open questions for {tickers}?",
-        f"What follow-up evidence should be gathered for themes: {theme_text}?",
-        "Which claims in the report are weak because the underlying source data is missing or stale?",
+        "Which items are truly material versus noise?",
+        "Which categories are showing stronger momentum today?",
+        f"Are there contradictions between price action, filings, news, and theme signals for {tickers}?",
+        "Which claims are weak because source data is missing, stale, or headline-only?",
+        f"Which companies need follow-up verification from official sources for themes: {theme_text}?",
     ]
 
 
@@ -724,12 +863,31 @@ def _records_from_items(record_type: str, items: Iterable[SourceFields]) -> list
                 source_name=item.source_name,
                 source_url=item.source_url,
                 final_url=getattr(item, "final_url", None),
+                canonical_url=getattr(item, "canonical_url", None),
+                canonical_url_status=getattr(item, "canonical_url_status", "unavailable"),
+                aggregator_source=getattr(item, "aggregator_source", None),
                 aggregator_url=getattr(item, "aggregator_url", None),
                 source_quality=getattr(item, "source_quality", "unknown"),
-                freshness=getattr(item, "freshness", "unknown"),
+                freshness=getattr(item, "freshness", None) or classify_freshness(item.published_at, date.today()),
                 cluster_id=getattr(item, "cluster_id", None),
+                content_depth=getattr(item, "content_depth", None),
                 published_at=item.published_at,
                 fetched_at=item.fetched_at,
             )
         )
     return records
+
+
+def _summary_text(summary: object) -> str:
+    if hasattr(summary, "what_happened"):
+        return " ".join(
+            str(getattr(summary, field, "") or "")
+            for field in [
+                "what_happened",
+                "affected_company",
+                "related_theme",
+                "possible_financial_impact",
+                "follow_up_needed",
+            ]
+        ).strip()
+    return str(summary or "")

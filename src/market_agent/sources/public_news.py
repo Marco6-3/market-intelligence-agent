@@ -106,13 +106,18 @@ def _items_from_feed(
         if not title:
             continue
         raw_url = row.get("link") or default_url
-        final_url, aggregator_url = _final_and_aggregator_urls(raw_url, url_resolver)
+        final_url, aggregator_url, canonical_url, canonical_status = _final_and_aggregator_urls(
+            raw_url, url_resolver
+        )
         summary, summary_confidence = _summary_from_feed_row(
             title=title,
             raw_summary=row.get("summary"),
             publisher=row.get("publisher"),
             item_type=item_type,
         )
+        publisher = truncate(row.get("publisher"), 120)
+        item_source_name = publisher if item_type == "public_news" and publisher else source_name
+        content_depth = "headline_only" if summary_confidence == "low" else "article_excerpt"
         items.append(
             NewsItem(
                 ticker=ticker,
@@ -120,11 +125,15 @@ def _items_from_feed(
                 title=title,
                 summary=summary,
                 summary_confidence=summary_confidence,
-                publisher=truncate(row.get("publisher"), 120),
+                content_depth=content_depth,
+                publisher=publisher,
                 symbols=[ticker],
-                source_name=source_name,
+                source_name=item_source_name,
                 source_url=final_url,
                 final_url=final_url,
+                canonical_url=canonical_url,
+                canonical_url_status=canonical_status,
+                aggregator_source=source_name if aggregator_url else None,
                 aggregator_url=aggregator_url,
                 published_at=_coerce_feed_datetime(row.get("published_at")),
                 fetched_at=fetched_at,
@@ -183,19 +192,19 @@ def _atom_link(entry: ET.Element) -> str | None:
 def _final_and_aggregator_urls(
     raw_url: str,
     url_resolver: Callable[[str], str | None] | None,
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, str | None, str]:
     if not _is_google_news_url(raw_url):
-        return raw_url, None
+        return raw_url, None, raw_url, "resolved"
 
     aggregator_url = raw_url
     parsed_target = _target_from_google_query(raw_url)
     if parsed_target:
-        return parsed_target, aggregator_url
+        return parsed_target, aggregator_url, parsed_target, "resolved"
     if url_resolver:
         resolved = url_resolver(raw_url)
         if resolved and not _is_google_news_url(resolved):
-            return resolved, aggregator_url
-    return raw_url, aggregator_url
+            return resolved, aggregator_url, resolved, "resolved"
+    return raw_url, aggregator_url, None, "unavailable"
 
 
 def _summary_from_feed_row(

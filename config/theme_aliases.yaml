@@ -1,0 +1,99 @@
+themes:
+  HBM:
+    aliases:
+      - HBM
+      - high-bandwidth memory
+      - high bandwidth memory
+      - High Bandwidth Memory
+
+  HBM3E:
+    aliases:
+      - HBM3E
+      - HBM 3E
+
+  HBM4:
+    aliases:
+      - HBM4
+      - HBM 4
+
+  DRAM:
+    aliases:
+      - DRAM
+      - dynamic random access memory
+
+  NAND:
+    aliases:
+      - NAND
+      - NAND Flash
+      - flash memory
+
+  HDD:
+    aliases:
+      - HDD
+      - hard disk drive
+      - nearline HDD
+      - nearline drive
+      - mass capacity storage
+
+  AI data center:
+    aliases:
+      - AI data center
+      - AI datacenter
+      - cloud AI infrastructure
+      - hyperscale AI
+      - AI cloud
+      - data center capex
+
+  AI ASIC:
+    aliases:
+      - AI ASIC
+      - custom AI chip
+      - custom silicon
+      - hyperscaler ASIC
+
+  AI networking:
+    aliases:
+      - AI networking
+      - Ethernet AI fabric
+      - data center switching
+      - optical interconnect
+
+  Advanced packaging:
+    aliases:
+      - advanced packaging
+      - CoWoS
+      - chiplet
+      - 2.5D packaging
+      - 3D packaging
+
+  EUV:
+    aliases:
+      - EUV
+      - High-NA EUV
+      - lithography
+
+  Robotics:
+    aliases:
+      - robotics
+      - robot
+      - humanoid robot
+      - embodied AI
+      - physical AI
+      - cobot
+      - collaborative robot
+      - AMR
+      - autonomous mobile robot
+
+  Surgical robotics:
+    aliases:
+      - surgical robot
+      - robotic surgery
+      - da Vinci
+
+  Industrial automation:
+    aliases:
+      - factory automation
+      - industrial automation
+      - smart manufacturing
+      - servo
+      - machine vision
